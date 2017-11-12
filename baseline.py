@@ -1,0 +1,155 @@
+"""
+This is the baseline model, which uses a RNN-LM directly.
+"""
+import time
+import torch
+import torch.nn as nn
+from torch.autograd import Variable
+from utils import get_batch, repackage_hidden
+import numpy as np
+import pdb
+
+class RNNModel(nn.Module):
+    """Container module with an encoder, a recurrent module, and a decoder."""
+
+    def __init__(self, ntoken, ninp, nhid, nlayers, dropout=0.5, dropouth=0.5, dropouti=0.5, dropoute=0.1, wdrop=0, tie_weights=False):
+        super(RNNModel, self).__init__()
+        self.idrop = nn.Dropout(dropouti)
+        self.hdrop = nn.Dropout(dropouth)
+        self.edrop = nn.Dropout(dropoute)
+        self.drop = nn.Dropout(dropout)
+        self.encoder = nn.Embedding(ntoken, ninp)
+        self.rnns = [torch.nn.LSTM(ninp if l == 0 else nhid, nhid if l != nlayers - 1 else (ninp if tie_weights else nhid), 1, dropout=0) for l in range(nlayers)]
+        print(self.rnns)
+        self.rnns = torch.nn.ModuleList(self.rnns)
+        self.decoder = nn.Linear(nhid, ntoken)
+
+        # Optionally tie weights as in:
+        # "Using the Output Embedding to Improve Language Models" (Press & Wolf 2016)
+        # https://arxiv.org/abs/1608.05859
+        # and
+        # "Tying Word Vectors and Word Classifiers: A Loss Framework for Language Modeling" (Inan et al. 2016)
+        # https://arxiv.org/abs/1611.01462
+        if tie_weights:
+            #if nhid != ninp:
+            #    raise ValueError('When using the tied flag, nhid must be equal to emsize')
+            self.decoder.weight = self.encoder.weight
+
+        self.init_weights()
+
+        self.ninp = ninp
+        self.nhid = nhid
+        self.nlayers = nlayers
+        self.dropout = dropout
+        self.dropouti = dropouti
+        self.dropouth = dropouth
+        self.dropoute = dropoute
+        self.tie_weights = tie_weights
+
+    def init_weights(self):
+        initrange = 0.1
+        self.encoder.weight.data.uniform_(-initrange, initrange)
+        self.decoder.bias.data.fill_(0)
+        self.decoder.weight.data.uniform_(-initrange, initrange)
+
+    def forward(self, input, hidden, return_h=False):
+        emb = self.idrop(self.encoder(input))
+
+        raw_output = emb
+        new_hidden = []
+        
+        # this is multilayer because the Salesforce version is, and I'll need it later.
+        # but for now, all experiments will be with 1-layer versions
+        raw_outputs = []
+        outputs = []
+        for l, rnn in enumerate(self.rnns):
+            current_input = raw_output
+            raw_output, new_h = rnn(raw_output, hidden[l])
+            new_hidden.append(new_h)
+            raw_outputs.append(raw_output)
+            if l != self.nlayers - 1:
+                raw_output = self.hdrop(raw_output)
+                outputs.append(raw_output)
+        hidden = new_hidden
+
+        output = self.edrop(raw_output)
+        
+        decoded = self.decoder(output.view(output.size(0)*output.size(1), output.size(2)))
+        result = decoded.view(output.size(0), output.size(1), decoded.size(1))
+        if return_h:
+            return result, hidden, raw_outputs, outputs
+        return result, hidden
+
+    def init_hidden(self, bsz):
+        weight = next(self.parameters()).data
+        return [(Variable(weight.new(1, bsz, self.nhid if l != self.nlayers - 1 else (self.ninp if self.tie_weights else self.nhid)).zero_()),
+                Variable(weight.new(1, bsz, self.nhid if l != self.nlayers - 1 else (self.ninp if self.tie_weights else self.nhid)).zero_()))
+                for l in range(self.nlayers)]
+    
+    def evaluate(self, corpus, data_source, args, criterion, batch_size=10):
+        # Turn on evaluation mode which disables dropout.
+        self.eval()
+        total_loss = 0
+        ntokens = len(corpus.dictionary)
+        hidden = self.init_hidden(batch_size)
+        pdb.set_trace()
+        for i in range(0, data_source.size(0) - 1, args.bptt):
+            data, targets = get_batch(data_source, i, args, evaluation=True)
+            output, hidden = self.forward(data, hidden)
+            output_flat = output.view(-1, ntokens)
+            total_loss += len(data) * criterion(output_flat, targets).data
+            hidden = repackage_hidden(hidden)
+        return total_loss[0] / len(data_source)
+
+    def train_epoch(self, corpus, train_data, criterion, optimizer, epoch, args):
+        # Turn on training mode which enables dropout.
+        total_loss = 0
+        start_time = time.time()
+        ntokens = len(corpus.dictionary)
+        hidden = self.init_hidden(args.batch_size)
+        batch, i = 0, 0
+        while i < train_data.size(0) - 1 - 1:
+            bptt = args.bptt if np.random.random() < 0.95 else args.bptt / 2.
+            # Prevent excessively small or negative sequence lengths
+            seq_len = max(5, int(np.random.normal(bptt, 5)))
+            # There's a very small chance that it could select a very long sequence length resulting in OOM
+            # seq_len = min(seq_len, args.bptt + 10)
+
+            lr2 = optimizer.param_groups[0]['lr']
+            optimizer.param_groups[0]['lr'] = lr2 * seq_len / args.bptt
+            self.train()
+            data, targets = get_batch(train_data, i, args, seq_len=seq_len)
+
+            # Starting each batch, we detach the hidden state from how it was previously produced.
+            # If we didn't, the model would try backpropagating all the way to start of the dataset.
+            hidden = repackage_hidden(hidden)
+            optimizer.zero_grad()
+
+            output, hidden, rnn_hs, dropped_rnn_hs = self.forward(data, hidden, return_h=True)
+            raw_loss = criterion(output.view(-1, ntokens), targets)
+
+            loss = raw_loss
+            # Activiation Regularization
+            loss = loss + sum(args.alpha * dropped_rnn_h.pow(2).mean() for dropped_rnn_h in dropped_rnn_hs[-1:])
+            # Temporal Activation Regularization (slowness)
+            loss = loss + sum(args.beta * (rnn_h[1:] - rnn_h[:-1]).pow(2).mean() for rnn_h in rnn_hs[-1:])
+            loss.backward()
+
+            # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
+            torch.nn.utils.clip_grad_norm(self.parameters(), args.clip)
+            optimizer.step()
+
+            total_loss += raw_loss.data
+            optimizer.param_groups[0]['lr'] = lr2
+            if batch % args.log_interval == 0 and batch > 0:
+                cur_loss = total_loss[0] / args.log_interval
+                elapsed = time.time() - start_time
+                print('| epoch {:3d} | {:5d}/{:5d} batches | lr {:02.2f} | ms/batch {:5.2f} | '
+                        'loss {:5.2f} | ppl {:8.2f}'.format(
+                    epoch, batch, len(train_data) // args.bptt, optimizer.param_groups[0]['lr'],
+                    elapsed * 1000 / args.log_interval, cur_loss, np.exp(cur_loss)))
+                total_loss = 0
+                start_time = time.time()
+            ###
+            batch += 1
+            i += seq_len
