@@ -12,8 +12,8 @@ import baseline
 from utils import batchify, get_batch, repackage_hidden
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
-parser.add_argument('--data', type=str, default='data/penn/',
-                    help='location of the data corpus')
+parser.add_argument('--dataset', type=str, default='ptb',
+                    help='one of [ptb (default), wt2]')
 parser.add_argument('--model', type=str, default='baseline',
                     help='type of model to use (baseline, gaussian_filter, discrete_filter)')
 parser.add_argument('--emsize', type=int, default=400,
@@ -73,24 +73,23 @@ if torch.cuda.is_available():
         torch.cuda.manual_seed(args.seed)
 
 ###############################################################################
-# Load data
+# Load data and build the model
 ###############################################################################
 
-corpus = data.Corpus(args.data)
-
-eval_batch_size = 10
-test_batch_size = 1
-train_data = batchify(corpus.train, args.batch_size, args)
-val_data = batchify(corpus.valid, eval_batch_size, args)
-test_data = batchify(corpus.test, test_batch_size, args)
-
-###############################################################################
-# Build the model
-###############################################################################
-
-ntokens = len(corpus.dictionary)
 if args.model == 'baseline':
-    model = baseline.RNNModel(ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
+    if args.dataset == 'ptb':
+        train_data, val_data, test_data = PennTreeBank(batch_size=args.batch_size, bptt_len=args.bptt)
+        corpus = train_data.dataset.fields['text'].vocab
+        ntokens = len(corpus)
+
+        model = baseline.RNNModel(ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
+if args.model == 'filter':
+    if args.dataset == 'ptb':
+        train_data, val_data, test_data = PTBSeq2Seq(batch_size=args.batch_size)
+        corpus = train_data.dataset.fields['text'].vocab
+        ntokens = len(corpus)
+
+        # gotta figure this out
 
 if args.cuda:
     model.cuda()
@@ -134,7 +133,7 @@ try:
                 prm.data = tmp[prm].clone()
 
         else:
-            val_loss = model.evaluate(corpus, val_data, args, criterion, eval_batch_size)
+            val_loss = model.evaluate(corpus, val_data, args, criterion)
             print('-' * 89)
             print('| end of epoch {:3d} | time: {:5.2f}s | valid loss {:5.2f} | '
                     'valid ppl {:8.2f}'.format(epoch, (time.time() - epoch_start_time),
@@ -162,7 +161,7 @@ with open(args.save, 'rb') as f:
     model = torch.load(f)
 
 # Run on test data.
-test_loss = model.evaluate(corpus, test_data, args, criterion, test_batch_size)
+test_loss = model.evaluate(corpus, test_data, args, criterion)
 print('=' * 89)
 print('| End of training | test loss {:5.2f} | test ppl {:8.2f}'.format(
     test_loss, math.exp(test_loss)))

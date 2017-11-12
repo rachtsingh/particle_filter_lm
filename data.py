@@ -1,21 +1,47 @@
 import os
 import torch
 import torchtext
+import spacy
+import re
+import pdb
 
-from torchtext.datasets import WikiText2
-from torchtext.data import BucketIterator
+from torchtext.datasets import PennTreeBank, WikiText2
+from torchtext import data
 
-class WT2Seq2Seq(WikiText2):
+class Seq2SeqLMDataset(data.Dataset):
+    def __init__(self, path, text_field, **kwargs):
+        fields = [('text', text_field)]
+        examples = []
+        with open(path) as f:
+            for line in f:
+                text = text_field.preprocess(line) + ['<eos>']
+                examples.append(data.Example.fromlist([text], fields))
+
+        data.Dataset.__init__(self, examples, fields, **kwargs)
+    
+    @staticmethod
+    def sort_key(ex):
+        return len(ex.text)
+    
     @classmethod
-    def iters(cls, batch_size=32, bptt_len=35, device=0, root='.data', wv_dir='.',
-              wv_type=None, wv_dim='300d', **kwargs):
+    def splits(cls, text_field, root='./data', **kwargs):
+        return super(Seq2SeqLMDataset, cls).splits(root=root, text_field=text_field, **kwargs)
+
+    @classmethod
+    def iters(cls, batch_size=32, device=0, root='./data', vectors=None, **kwargs):
         """
-        This is the same as the WikiText2 dataset, but we iterate over it completely differently
+        PTB, but with sorted batches
         """
         TEXT = data.Field()
         train, val, test = cls.splits(TEXT, root=root, **kwargs)
-        TEXT.build_vocab(train, wv_dir=wv_dir, wv_type=wv_type, wv_dim=wv_dim)
-        return data.BucketIterator.splits((train, val, test), batch_size=batch_size, device=device, sort_key=lambda ex: len(ex.text))
+        TEXT.build_vocab(train, vectors=vectors)
+        return data.BucketIterator.splits((train, val, test), batch_size=batch_size, device=device)
+
+class PTBSeq2Seq(Seq2SeqLMDataset, PennTreeBank):
+    pass
+
+class WT2Seq2Seq(Seq2SeqLMDataset, WikiText2):
+    pass
 
 class Dictionary(object):
     def __init__(self):

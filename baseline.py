@@ -86,39 +86,33 @@ class RNNModel(nn.Module):
                 Variable(weight.new(1, bsz, self.nhid if l != self.nlayers - 1 else (self.ninp if self.tie_weights else self.nhid)).zero_()))
                 for l in range(self.nlayers)]
     
-    def evaluate(self, corpus, data_source, args, criterion, batch_size=10):
+    def evaluate(self, corpus, data_source, args, criterion):
         # Turn on evaluation mode which disables dropout.
         self.eval()
         total_loss = 0
-        ntokens = len(corpus.dictionary)
-        hidden = self.init_hidden(batch_size)
+        ntokens = len(corpus)
+        hidden = self.init_hidden(args.batch_size)
         pdb.set_trace()
-        for i in range(0, data_source.size(0) - 1, args.bptt):
-            data, targets = get_batch(data_source, i, args, evaluation=True)
+        for batch in data_source:
+            data, targets = batch.text, batch.target
             output, hidden = self.forward(data, hidden)
             output_flat = output.view(-1, ntokens)
             total_loss += len(data) * criterion(output_flat, targets).data
             hidden = repackage_hidden(hidden)
-        return total_loss[0] / len(data_source)
+        return total_loss[0] / len(data_source.dataset[0].text)
 
     def train_epoch(self, corpus, train_data, criterion, optimizer, epoch, args):
         # Turn on training mode which enables dropout.
         total_loss = 0
         start_time = time.time()
-        ntokens = len(corpus.dictionary)
+        ntokens = len(corpus)
         hidden = self.init_hidden(args.batch_size)
-        batch, i = 0, 0
-        while i < train_data.size(0) - 1 - 1:
-            bptt = args.bptt if np.random.random() < 0.95 else args.bptt / 2.
-            # Prevent excessively small or negative sequence lengths
-            seq_len = max(5, int(np.random.normal(bptt, 5)))
-            # There's a very small chance that it could select a very long sequence length resulting in OOM
-            # seq_len = min(seq_len, args.bptt + 10)
-
+        for batch_num, batch in enumerate(train_data):
+            data, targets = batch.text, batch.target
+            
             lr2 = optimizer.param_groups[0]['lr']
-            optimizer.param_groups[0]['lr'] = lr2 * seq_len / args.bptt
+            optimizer.param_groups[0]['lr'] = lr2 * batch.size(0) / args.bptt
             self.train()
-            data, targets = get_batch(train_data, i, args, seq_len=seq_len)
 
             # Starting each batch, we detach the hidden state from how it was previously produced.
             # If we didn't, the model would try backpropagating all the way to start of the dataset.
@@ -126,6 +120,7 @@ class RNNModel(nn.Module):
             optimizer.zero_grad()
 
             output, hidden, rnn_hs, dropped_rnn_hs = self.forward(data, hidden, return_h=True)
+            print(output.size())
             raw_loss = criterion(output.view(-1, ntokens), targets)
 
             loss = raw_loss
@@ -141,15 +136,12 @@ class RNNModel(nn.Module):
 
             total_loss += raw_loss.data
             optimizer.param_groups[0]['lr'] = lr2
-            if batch % args.log_interval == 0 and batch > 0:
+            if batch_num % args.log_interval == 0 and batch > 0:
                 cur_loss = total_loss[0] / args.log_interval
                 elapsed = time.time() - start_time
                 print('| epoch {:3d} | {:5d}/{:5d} batches | lr {:02.2f} | ms/batch {:5.2f} | '
                         'loss {:5.2f} | ppl {:8.2f}'.format(
-                    epoch, batch, len(train_data) // args.bptt, optimizer.param_groups[0]['lr'],
+                    epoch, batch_num, len(train_data) // args.bptt, optimizer.param_groups[0]['lr'],
                     elapsed * 1000 / args.log_interval, cur_loss, np.exp(cur_loss)))
                 total_loss = 0
                 start_time = time.time()
-            ###
-            batch += 1
-            i += seq_len
