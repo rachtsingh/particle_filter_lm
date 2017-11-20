@@ -101,3 +101,8 @@ ENV/
 # mypy
 .mypy_cache/
 data/
+*.aux
+*.fdb_latexmk
+*.fls
+*.out
+*.synctex.gz
