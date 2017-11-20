@@ -5,7 +5,7 @@ import time
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
-from utils import get_batch, repackage_hidden
+from utils import repackage_hidden
 import numpy as np
 import pdb
 
@@ -92,12 +92,11 @@ class RNNModel(nn.Module):
         total_loss = 0
         ntokens = len(corpus)
         hidden = self.init_hidden(args.batch_size)
-        pdb.set_trace()
         for batch in data_source:
             data, targets = batch.text, batch.target
             output, hidden = self.forward(data, hidden)
             output_flat = output.view(-1, ntokens)
-            total_loss += len(data) * criterion(output_flat, targets).data
+            total_loss += len(data) * args.batch_size * criterion(output_flat, targets.view(-1)).data
             hidden = repackage_hidden(hidden)
         return total_loss[0] / len(data_source.dataset[0].text)
 
@@ -111,7 +110,7 @@ class RNNModel(nn.Module):
             data, targets = batch.text, batch.target
             
             lr2 = optimizer.param_groups[0]['lr']
-            optimizer.param_groups[0]['lr'] = lr2 * batch.size(0) / args.bptt
+            optimizer.param_groups[0]['lr'] = lr2 * batch.text.size(0) / args.bptt
             self.train()
 
             # Starting each batch, we detach the hidden state from how it was previously produced.
@@ -120,12 +119,13 @@ class RNNModel(nn.Module):
             optimizer.zero_grad()
 
             output, hidden, rnn_hs, dropped_rnn_hs = self.forward(data, hidden, return_h=True)
-            print(output.size())
-            raw_loss = criterion(output.view(-1, ntokens), targets)
+            raw_loss = criterion(output.view(-1, ntokens), targets.view(-1))
 
             loss = raw_loss
-            # Activiation Regularization
+
+            # Activation Regularization
             loss = loss + sum(args.alpha * dropped_rnn_h.pow(2).mean() for dropped_rnn_h in dropped_rnn_hs[-1:])
+
             # Temporal Activation Regularization (slowness)
             loss = loss + sum(args.beta * (rnn_h[1:] - rnn_h[:-1]).pow(2).mean() for rnn_h in rnn_hs[-1:])
             loss.backward()
@@ -136,7 +136,7 @@ class RNNModel(nn.Module):
 
             total_loss += raw_loss.data
             optimizer.param_groups[0]['lr'] = lr2
-            if batch_num % args.log_interval == 0 and batch > 0:
+            if batch_num % args.log_interval == 0 and batch_num > 0:
                 cur_loss = total_loss[0] / args.log_interval
                 elapsed = time.time() - start_time
                 print('| epoch {:3d} | {:5d}/{:5d} batches | lr {:02.2f} | ms/batch {:5.2f} | '

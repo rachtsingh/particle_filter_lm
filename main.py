@@ -6,10 +6,11 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 
+from torchtext.datasets import PennTreeBank
 import data
 import baseline
 
-from utils import batchify, get_batch, repackage_hidden
+from utils import repackage_hidden
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
 parser.add_argument('--dataset', type=str, default='ptb',
@@ -63,6 +64,8 @@ parser.add_argument('--wdecay', type=float, default=1.2e-6,
                     help='weight decay applied to all weights')
 args = parser.parse_args()
 
+print(args)
+
 # Set the random seed manually for reproducibility.
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
@@ -78,14 +81,14 @@ if torch.cuda.is_available():
 
 if args.model == 'baseline':
     if args.dataset == 'ptb':
-        train_data, val_data, test_data = PennTreeBank(batch_size=args.batch_size, bptt_len=args.bptt)
+        train_data, val_data, test_data = PennTreeBank.iters(batch_size=args.batch_size, bptt_len=args.bptt)
         corpus = train_data.dataset.fields['text'].vocab
         ntokens = len(corpus)
 
         model = baseline.RNNModel(ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
 if args.model == 'filter':
     if args.dataset == 'ptb':
-        train_data, val_data, test_data = PTBSeq2Seq(batch_size=args.batch_size)
+        train_data, val_data, test_data = PTBSeq2Seq.iters(batch_size=args.batch_size)
         corpus = train_data.dataset.fields['text'].vocab
         ntokens = len(corpus)
 
