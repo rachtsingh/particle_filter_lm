@@ -127,8 +127,8 @@ try:
             print('-' * 89)
 
             if val_loss2 < stored_loss:
-                with open(args.save, 'wb') as f:
-                    torch.save(model, f)
+                # with open(args.save, 'wb') as f:
+                    # torch.save(model, f)
                 print('Saving Averaged!')
                 stored_loss = val_loss2
 
@@ -144,8 +144,8 @@ try:
             print('-' * 89)
 
             if val_loss < stored_loss:
-                with open(args.save, 'wb') as f:
-                    torch.save(model, f)
+                # with open(args.save, 'wb') as f:
+                    # torch.save(model, f)
                 print('Saving Normal!')
                 stored_loss = val_loss
 

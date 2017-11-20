@@ -9,15 +9,19 @@ from utils import repackage_hidden
 import numpy as np
 import pdb
 
+from locked_dropout import LockedDropout
+from embed_regularize import embedded_dropout
+
 class RNNModel(nn.Module):
     """Container module with an encoder, a recurrent module, and a decoder."""
 
     def __init__(self, ntoken, ninp, nhid, nlayers, dropout=0.5, dropouth=0.5, dropouti=0.5, dropoute=0.1, wdrop=0, tie_weights=False):
         super(RNNModel, self).__init__()
-        self.idrop = nn.Dropout(dropouti)
-        self.hdrop = nn.Dropout(dropouth)
-        self.edrop = nn.Dropout(dropoute)
-        self.drop = nn.Dropout(dropout)
+        # variational dropout
+        self.lockdrop = LockedDropout()
+        # self.idrop = nn.Dropout(dropouti)
+        # self.hdrop = nn.Dropout(dropouth)
+        # self.edrop = nn.Dropout(dropoute)
         self.encoder = nn.Embedding(ntoken, ninp)
         self.rnns = [torch.nn.LSTM(ninp if l == 0 else nhid, nhid if l != nlayers - 1 else (ninp if tie_weights else nhid), 1, dropout=0) for l in range(nlayers)]
         print(self.rnns)
@@ -53,7 +57,8 @@ class RNNModel(nn.Module):
         self.decoder.weight.data.uniform_(-initrange, initrange)
 
     def forward(self, input, hidden, return_h=False):
-        emb = self.idrop(self.encoder(input))
+        emb = embedded_dropout(self.encoder, input, dropout=self.dropoute if self.training else 0)
+        emb = self.lockdrop(emb, self.dropouti)
 
         raw_output = emb
         new_hidden = []
@@ -68,11 +73,11 @@ class RNNModel(nn.Module):
             new_hidden.append(new_h)
             raw_outputs.append(raw_output)
             if l != self.nlayers - 1:
-                raw_output = self.hdrop(raw_output)
+                raw_output = self.lockdrop(raw_output, self.dropouth)
                 outputs.append(raw_output)
         hidden = new_hidden
 
-        output = self.edrop(raw_output)
+        output = self.lockdrop(raw_output, self.dropout)
         
         decoded = self.decoder(output.view(output.size(0)*output.size(1), output.size(2)))
         result = decoded.view(output.size(0), output.size(1), decoded.size(1))
@@ -108,7 +113,7 @@ class RNNModel(nn.Module):
         hidden = self.init_hidden(args.batch_size)
         for batch_num, batch in enumerate(train_data):
             data, targets = batch.text, batch.target
-            
+
             lr2 = optimizer.param_groups[0]['lr']
             optimizer.param_groups[0]['lr'] = lr2 * batch.text.size(0) / args.bptt
             self.train()
