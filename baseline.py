@@ -7,15 +7,16 @@ import torch.nn as nn
 from torch.autograd import Variable
 from utils import repackage_hidden
 import numpy as np
-import pdb
 
 from locked_dropout import LockedDropout
 from embed_regularize import embedded_dropout
 
+
 class RNNModel(nn.Module):
     """Container module with an encoder, a recurrent module, and a decoder."""
 
-    def __init__(self, ntoken, ninp, nhid, nlayers, dropout=0.5, dropouth=0.5, dropouti=0.5, dropoute=0.1, wdrop=0, tie_weights=False):
+    def __init__(self, ntoken, ninp, nhid, nlayers, dropout=0.5, dropouth=0.5, dropouti=0.5,
+                 dropoute=0.1, wdrop=0, tie_weights=False):
         super(RNNModel, self).__init__()
         # variational dropout
         self.lockdrop = LockedDropout()
@@ -23,7 +24,9 @@ class RNNModel(nn.Module):
         # self.hdrop = nn.Dropout(dropouth)
         # self.edrop = nn.Dropout(dropoute)
         self.encoder = nn.Embedding(ntoken, ninp)
-        self.rnns = [torch.nn.LSTM(ninp if l == 0 else nhid, nhid if l != nlayers - 1 else (ninp if tie_weights else nhid), 1, dropout=0) for l in range(nlayers)]
+        self.rnns = [torch.nn.LSTM(ninp if layer == 0 else nhid,
+                                   nhid if layer != nlayers - 1 else (ninp if tie_weights else nhid),
+                                   1, dropout=0) for layer in range(nlayers)]
         print(self.rnns)
         self.rnns = torch.nn.ModuleList(self.rnns)
         self.decoder = nn.Linear(nhid, ntoken)
@@ -35,8 +38,6 @@ class RNNModel(nn.Module):
         # "Tying Word Vectors and Word Classifiers: A Loss Framework for Language Modeling" (Inan et al. 2016)
         # https://arxiv.org/abs/1611.01462
         if tie_weights:
-            #if nhid != ninp:
-            #    raise ValueError('When using the tied flag, nhid must be equal to emsize')
             self.decoder.weight = self.encoder.weight
 
         self.init_weights()
@@ -62,23 +63,22 @@ class RNNModel(nn.Module):
 
         raw_output = emb
         new_hidden = []
-        
+
         # this is multilayer because the Salesforce version is, and I'll need it later.
         # but for now, all experiments will be with 1-layer versions
         raw_outputs = []
         outputs = []
-        for l, rnn in enumerate(self.rnns):
-            current_input = raw_output
-            raw_output, new_h = rnn(raw_output, hidden[l])
+        for layer, rnn in enumerate(self.rnns):
+            raw_output, new_h = rnn(raw_output, hidden[layer])
             new_hidden.append(new_h)
             raw_outputs.append(raw_output)
-            if l != self.nlayers - 1:
+            if layer != self.nlayers - 1:
                 raw_output = self.lockdrop(raw_output, self.dropouth)
                 outputs.append(raw_output)
         hidden = new_hidden
 
         output = self.lockdrop(raw_output, self.dropout)
-        
+
         decoded = self.decoder(output.view(output.size(0)*output.size(1), output.size(2)))
         result = decoded.view(output.size(0), output.size(1), decoded.size(1))
         if return_h:
@@ -87,10 +87,13 @@ class RNNModel(nn.Module):
 
     def init_hidden(self, bsz):
         weight = next(self.parameters()).data
-        return [(Variable(weight.new(1, bsz, self.nhid if l != self.nlayers - 1 else (self.ninp if self.tie_weights else self.nhid)).zero_()),
-                Variable(weight.new(1, bsz, self.nhid if l != self.nlayers - 1 else (self.ninp if self.tie_weights else self.nhid)).zero_()))
+
+        def chosen_size(l):
+            return self.nhid if l != self.nlayers - 1 else (self.ninp if self.tie_weights else self.nhid)
+        return [(Variable(weight.new(1, bsz, chosen_size(l)).zero_()),
+                Variable(weight.new(1, bsz, chosen_size(l)).zero_()))
                 for l in range(self.nlayers)]
-    
+
     def evaluate(self, corpus, data_source, args, criterion):
         # Turn on evaluation mode which disables dropout.
         self.eval()
@@ -145,8 +148,8 @@ class RNNModel(nn.Module):
                 cur_loss = total_loss[0] / args.log_interval
                 elapsed = time.time() - start_time
                 print('| epoch {:3d} | {:5d}/{:5d} batches | lr {:02.2f} | ms/batch {:5.2f} | '
-                        'loss {:5.2f} | ppl {:8.2f}'.format(
-                    epoch, batch_num, len(train_data) // args.bptt, optimizer.param_groups[0]['lr'],
-                    elapsed * 1000 / args.log_interval, cur_loss, np.exp(cur_loss)))
+                      'loss {:5.2f} | ppl {:8.2f}'.format(
+                        epoch, batch_num, len(train_data) // args.bptt, optimizer.param_groups[0]['lr'],
+                        elapsed * 1000 / args.log_interval, cur_loss, np.exp(cur_loss)))
                 total_loss = 0
                 start_time = time.time()

@@ -1,9 +1,7 @@
-###############################################################################
-# Language Modeling on Penn Tree Bank
-#
-# This file generates new sentences sampled from the language model
-#
-###############################################################################
+"""
+This file doens't currently work, since I've gutted out the data processing 
+bits of this project. When I need it, it's easy from the salesforce git repo
+"""
 
 import argparse
 
