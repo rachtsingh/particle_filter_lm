@@ -75,15 +75,20 @@ class RVAE(nn.Module):
         mean = self.mean(last_output)
         logvar = self.logvar(last_output)
         std = (logvar/2).exp()
-        samples = (Variable(torch.randn(mean.size())) * std) + mean
-        output_hidden = torch.chunk(samples, 2, 1)
+        samples = (Variable(torch.randn(mean.size()).cuda()) * std) + mean
+        output_hidden = torch.chunk(samples.contiguous(), 2, 1)
+
+        a, b = output_hidden
+        a = a.contiguous()
+        b = b.contiguous()
 
         # now we pass this through the decoder
         # targets has <bos> and doesn't have <eos>
-        out_emb = self.inp_embedding(targets)
-        raw_out, _ = self.decoder(out_emb, output_hidden)
+        out_emb = self.inp_embedding(targets).contiguous()
+        raw_out, _ = self.decoder(out_emb, (a.unsqueeze(0), b.unsqueeze(0)))
         seq_len, batches, nhid = raw_out.size()
-        decoder_output = self.out_embedding(raw_out.view(seq_len * batches, nhid))
+        resized = raw_out.view(seq_len * batches, nhid).contiguous()
+        decoder_output = self.out_embedding(resized)
         logits = decoder_output.view(seq_len, batches, self.ntoken)
 
         return logits, mean, logvar
@@ -122,7 +127,7 @@ class RVAE(nn.Module):
             loss = elbo/tokens
             loss.backward()
 
-            total_loss += elbo
+            total_loss += elbo.detach()
             total_tokens += tokens
 
             # print if necessary
