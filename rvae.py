@@ -33,6 +33,7 @@ class RVAE(nn.Module):
         self.out_embedding = nn.Linear(nhid, ntoken)
         if tie_weights:
             assert nhid == ninp, "nhidden has to equal ninp for tying"
+            print("tying weights")
             self.out_embedding.weight = self.inp_embedding.weight
 
         self.init_weights()
@@ -103,16 +104,17 @@ class RVAE(nn.Module):
 
     def evaluate(self, corpus, data_source, args, criterion):
         self.eval()
+        args.anneal = 1.
         total_loss = 0
         total_tokens = 0
         for batch in data_source:
             hidden = self.init_hidden_encoder(batch.batch_size)
             data, targets = batch.text, batch.target
             logits, mean, logvar = self.forward(data, hidden, targets)
-            loss, tokens = self.elbo(logits, targets, criterion, mean, logvar, 1, args)
+            loss, NLL, KL, tokens = self.elbo(logits, data, criterion, mean, logvar, args)
             total_loss += loss.detach()
             total_tokens += tokens
-        return total_loss[0] / total_tokens
+        return total_loss.data[0] / total_tokens
 
     def train_epoch(self, corpus, train_data, criterion, optimizer, epoch, args):
         self.train()
@@ -128,6 +130,7 @@ class RVAE(nn.Module):
             elbo, NLL, KL, tokens = self.elbo(logits, targets, criterion, mean, logvar, args)
             loss = elbo/tokens
             loss.backward()
+            optimizer.step()
 
             total_loss += elbo.detach()
             total_tokens += tokens

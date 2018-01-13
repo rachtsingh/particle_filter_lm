@@ -23,7 +23,7 @@ parser.add_argument('--nhid', type=int, default=400,
                     help='number of hidden units per layer')
 parser.add_argument('--nlayers', type=int, default=3,
                     help='number of layers')
-parser.add_argument('--lr', type=float, default=30,
+parser.add_argument('--lr', type=float, default=5,
                     help='initial learning rate')
 parser.add_argument('--clip', type=float, default=0.25,
                     help='gradient clipping')
@@ -134,10 +134,10 @@ try:
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()
 
-        if epoch < 10:
-            args.anneal = 0
+        if epoch < 5:
+            args.anneal = 0.0001
         else:
-            args.anneal = min(epoch/50, 1.)
+            args.anneal = min(epoch/50., 1.)
 
         train_loss = model.train_epoch(corpus, train_data, criterion, optimizer, epoch, args)
 
