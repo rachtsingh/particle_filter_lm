@@ -27,7 +27,7 @@ parser.add_argument('--lr', type=float, default=5,
                     help='initial learning rate')
 parser.add_argument('--clip', type=float, default=0.25,
                     help='gradient clipping')
-parser.add_argument('--epochs', type=int, default=100,
+parser.add_argument('--epochs', type=int, default=1000,
                     help='upper epoch limit')
 parser.add_argument('--batch_size', type=int, default=80, metavar='N',
                     help='batch size')
@@ -136,8 +136,10 @@ try:
 
         if epoch < 5:
             args.anneal = 0.0001
+            args.lr = lr
         else:
-            args.anneal = min(epoch/50., 1.)
+            args.anneal = min(epoch/250., 1.)
+            args.lr = lr/2.
 
         train_loss = model.train_epoch(corpus, train_data, criterion, optimizer, epoch, args)
 
