@@ -32,7 +32,7 @@ class Seq2SeqLMDataset(data.Dataset):
         TEXT = data.Field()
         train, val, test = cls.splits(TEXT, root=root, **kwargs)
         TEXT.build_vocab(train, vectors=vectors)
-        return data.BucketIterator.splits((train, val, test), batch_size=batch_size, device=device)
+        return data.BucketIterator.splits((train, val, test), batch_size=batch_size, device=device, repeat=False)
 
 
 class PTBSeq2Seq(Seq2SeqLMDataset, PennTreeBank):

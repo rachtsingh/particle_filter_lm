@@ -64,8 +64,6 @@ parser.add_argument('--wdecay', type=float, default=1.2e-6,
                     help='weight decay applied to all weights')
 args = parser.parse_args()
 
-print(args)
-
 # Set the random seed manually for reproducibility.
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
@@ -118,6 +116,7 @@ if args.model == 'filter':
 if args.cuda and torch.cuda.is_available():
     model.cuda()
 total_params = sum(x.size()[0] * x.size()[1] if len(x.size()) > 1 else x.size()[0] for x in model.parameters())
+
 print("Running Git SHA: ", get_sha())
 print('Args:', args)
 print('Model total parameters:', total_params)
@@ -134,6 +133,12 @@ try:
     optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.wdecay)
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()
+
+        if epoch < 10:
+            args.anneal = 0
+        else:
+            args.anneal = min(epoch/50, 1.)
+
         train_loss = model.train_epoch(corpus, train_data, criterion, optimizer, epoch, args)
 
         # let's ignore ASGD for now

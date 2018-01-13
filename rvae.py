@@ -79,9 +79,8 @@ class RVAE(nn.Module):
         if torch.cuda.is_available():
             eps = eps.cuda()
         samples = (Variable(eps) * std) + mean
-        output_hidden = torch.chunk(samples, 2, 1)
-
-        a, b = output_hidden
+        
+        a, b = torch.chunk(samples, 2, 1)
         a = a.contiguous()
         b = b.contiguous()
 
@@ -96,11 +95,11 @@ class RVAE(nn.Module):
 
         return logits, mean, logvar
 
-    def elbo(self, logits, targets, criterion, mean, logvar, anneal, args):
+    def elbo(self, logits, targets, criterion, mean, logvar, args):
         seq_len, batch_size, ntokens = logits.size()
         NLL = seq_len * batch_size * criterion(logits.view(-1, ntokens), targets.view(-1))
         KL = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
-        return (NLL + anneal * KL), NLL, KL, seq_len * batch_size
+        return (NLL + args.anneal * KL), NLL, KL, seq_len * batch_size
 
     def evaluate(self, corpus, data_source, args, criterion):
         self.eval()
@@ -111,7 +110,7 @@ class RVAE(nn.Module):
             data, targets = batch.text, batch.target
             logits, mean, logvar = self.forward(data, hidden, targets)
             loss, tokens = self.elbo(logits, targets, criterion, mean, logvar, 1, args)
-            total_loss += loss
+            total_loss += loss.detach()
             total_tokens += tokens
         return total_loss[0] / total_tokens
 
@@ -126,7 +125,7 @@ class RVAE(nn.Module):
             optimizer.zero_grad()
             data, targets = batch.text, batch.target
             logits, mean, logvar = self.forward(data, hidden, targets)
-            elbo, NLL, KL, tokens = self.elbo(logits, targets, criterion, mean, logvar, 1, args)
+            elbo, NLL, KL, tokens = self.elbo(logits, targets, criterion, mean, logvar, args)
             loss = elbo/tokens
             loss.backward()
 
@@ -137,6 +136,6 @@ class RVAE(nn.Module):
             if batch_idx % args.log_interval == 0 and batch_idx > 0:
                 print_in_epoch_summary(epoch, batch_idx, args.batch_size, dataset_size,
                                        loss.data[0], NLL.data[0] / tokens, {'normal': KL.data[0] / tokens},
-                                       tokens, "anneal={:.2f}".format(1))
+                                       tokens, "anneal={:.2f}".format(args.anneal))
             batch_idx += 1  # because no cheap generator smh
         return total_loss[0] / total_tokens
