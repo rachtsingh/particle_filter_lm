@@ -75,8 +75,11 @@ class RVAE(nn.Module):
         mean = self.mean(last_output)
         logvar = self.logvar(last_output)
         std = (logvar/2).exp()
-        samples = (Variable(torch.randn(mean.size()).cuda()) * std) + mean
-        output_hidden = torch.chunk(samples.contiguous(), 2, 1)
+        eps = torch.randn(mean.size())
+        if torch.cuda.is_available():
+            eps = eps.cuda()
+        samples = (Variable(eps) * std) + mean
+        output_hidden = torch.chunk(samples, 2, 1)
 
         a, b = output_hidden
         a = a.contiguous()
