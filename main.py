@@ -117,7 +117,7 @@ if args.cuda and torch.cuda.is_available():
     model.cuda()
 total_params = sum(x.size()[0] * x.size()[1] if len(x.size()) > 1 else x.size()[0] for x in model.parameters())
 
-print("Running Git SHA: ", get_sha())
+print("SHA: {}".format(get_sha().strip()))
 print('Args:', args)
 print('Model total parameters:', total_params)
 
