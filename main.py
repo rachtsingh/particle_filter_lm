@@ -139,7 +139,7 @@ try:
         epoch_start_time = time.time()
 
         if epoch < args.kl_anneal_delay:
-            args.anneal = 0.0001
+            args.anneal = 0.
         else:
             args.anneal = (epoch - args.kl_anneal_delay) * (500 * args.kl_anneal_rate)
 
