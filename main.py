@@ -33,6 +33,8 @@ parser.add_argument('--kl-anneal-delay', type=float, default=10,
                     help='number of epochs to delay increasing the KL divergence contribution')
 parser.add_argument('--kl-anneal-rate', type=float, default=0.0005,
                     help='amount to increase the KL divergence amount *per batch*')
+parser.add_argument('--keep-rate', type=float, default=1.,
+                    help='rate at which to keep words during decoders')
 parser.add_argument('--epochs', type=int, default=1000,
                     help='upper epoch limit')
 parser.add_argument('--batch_size', type=int, default=80, metavar='N',

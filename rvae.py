@@ -18,7 +18,7 @@ class RVAE(nn.Module):
     We're using a single layer RNN on both the encoder and decoder side
     """
 
-    def __init__(self, ntoken, ninp, nhid, nlayers, z_dim, dropout=0.5, dropouth=0.5,
+    def __init__(self, ntoken, ninp, nhid, z_dim, nlayers, dropout=0.5, dropouth=0.5,
                  dropouti=0.5, dropoute=0.1, wdrop=0, tie_weights=True):
         super(RVAE, self).__init__()
         self.lockdrop = LockedDropout()
@@ -63,7 +63,7 @@ class RVAE(nn.Module):
         return (Variable(weight.new(1, bsz, chosen_size).zero_()),
                 Variable(weight.new(1, bsz, chosen_size).zero_()))
 
-    def forward(self, input, hidden, targets, return_h=False):
+    def forward(self, input, hidden, targets, args, return_h=False):
         """
         input: [seq len x batch x V]
         """
@@ -90,14 +90,15 @@ class RVAE(nn.Module):
 
         # now we pass this through the decoder, also adding the source sentence offset
         # targets has <bos> and doesn't have <eos>
-        out_emb = self.inp_embedding(targets).contiguous()
-
+        # also, we weaken decoder by removing some words
+        msk = Variable(torch.bernoulli(torch.ones(targets.size()) * args.keep_rate).long().cuda())
+        out_emb = self.inp_embedding(targets * msk).contiguous()
         raw_out, _ = self.decoder(out_emb, (a.unsqueeze(0), b.unsqueeze(0)))
         seq_len, batches, nhid = raw_out.size()
         resized = raw_out.view(seq_len * batches, nhid).contiguous()
         decoder_output = self.out_embedding(self.out_linear(resized))
         logits = decoder_output.view(seq_len, batches, self.ntoken)
-
+    
         return logits, mean, logvar
 
     def elbo(self, logits, targets, criterion, mean, logvar, args):
@@ -115,7 +116,7 @@ class RVAE(nn.Module):
         for batch in data_source:
             hidden = self.init_hidden_encoder(batch.batch_size)
             data, targets = batch.text, batch.target
-            logits, mean, logvar = self.forward(data, hidden, targets)
+            logits, mean, logvar = self.forward(data, hidden, targets, args)
             loss, NLL, KL, tokens = self.elbo(logits, data, criterion, mean, logvar, args)
             total_loss += loss.detach().data
             total_nll += NLL.detach().data
@@ -135,7 +136,7 @@ class RVAE(nn.Module):
             hidden = self.init_hidden_encoder(batch.batch_size)
             optimizer.zero_grad()
             data, targets = batch.text, batch.target
-            logits, mean, logvar = self.forward(data, hidden, targets)
+            logits, mean, logvar = self.forward(data, hidden, targets, args)
             elbo, NLL, KL, tokens = self.elbo(logits, targets, criterion, mean, logvar, args)
             loss = elbo/tokens
             loss.backward()
