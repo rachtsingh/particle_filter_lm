@@ -88,9 +88,10 @@ class RVAE(nn.Module):
         a = a.contiguous()
         b = b.contiguous()
 
-        # now we pass this through the decoder
+        # now we pass this through the decoder, also adding the source sentence offset
         # targets has <bos> and doesn't have <eos>
         out_emb = self.inp_embedding(targets).contiguous()
+
         raw_out, _ = self.decoder(out_emb, (a.unsqueeze(0), b.unsqueeze(0)))
         seq_len, batches, nhid = raw_out.size()
         resized = raw_out.view(seq_len * batches, nhid).contiguous()

@@ -49,7 +49,7 @@ parser.add_argument('--dropoute', type=float, default=0.1,
                     help='dropout to remove words from embedding layer (0 = no dropout)')
 parser.add_argument('--wdrop', type=float, default=0.5,
                     help='amount of weight dropout to apply to the RNN hidden to hidden matrix')
-parser.add_argument('--not-tied', action='store_false',
+parser.add_argument('--not-tied', action='store_true',
                     help='tie the word embedding and softmax weights')
 parser.add_argument('--seed', type=int, default=1111,
                     help='random seed')
@@ -99,7 +99,7 @@ if args.model == 'baseline':
 
         model = baseline.RNNModel(ntokens, args.emsize, args.nhid, args.nlayers,
                                   args.dropout, args.dropouth, args.dropouti,
-                                  args.dropoute, args.wdrop, args.not_tied)
+                                  args.dropoute, args.wdrop, not args.not_tied)
 
 # BASELINE RVAE
 if args.model == 'rvae':
@@ -108,7 +108,7 @@ if args.model == 'rvae':
         corpus = train_data.dataset.fields['target'].vocab  # includes BOS
         ntokens = len(corpus)
         model = rvae.RVAE(ntokens, args.emsize, args.nhid, args.z_dim, 1, args.dropout, args.dropouth,
-                          args.dropouti, args.dropoute, args.wdrop, args.not_tied)
+                          args.dropouti, args.dropoute, args.wdrop, not args.not_tied)
 
 # OUR MODEL (PARTICLE FILTER LM)
 if args.model == 'filter':
