@@ -17,12 +17,14 @@ parser.add_argument('--dataset', type=str, default='ptb',
                     help='one of [ptb (default), wt2]')
 parser.add_argument('--model', type=str, default='rvae',
                     help='type of model to use (baseline, gaussian_filter, discrete_filter)')
-parser.add_argument('--emsize', type=int, default=300,
+parser.add_argument('--emsize', type=int, default=350,
                     help='size of word embeddings')
-parser.add_argument('--nhid', type=int, default=300,
+parser.add_argument('--nhid', type=int, default=200,
                     help='number of hidden units per layer')
 parser.add_argument('--nlayers', type=int, default=3,
                     help='number of layers')
+parser.add_argument('--z-dim', type=int, default=15,
+                    help='dimensionality of the hidden z')
 parser.add_argument('--lr', type=float, default=5,
                     help='initial learning rate')
 parser.add_argument('--clip', type=float, default=0.25,
@@ -105,7 +107,7 @@ if args.model == 'rvae':
         train_data, val_data, test_data = PTBSeq2Seq.iters(batch_size=args.batch_size, device=device)
         corpus = train_data.dataset.fields['target'].vocab  # includes BOS
         ntokens = len(corpus)
-        model = rvae.RVAE(ntokens, args.emsize, args.nhid, 1, args.dropout, args.dropouth,
+        model = rvae.RVAE(ntokens, args.emsize, args.nhid, args.z_dim, 1, args.dropout, args.dropouth,
                           args.dropouti, args.dropoute, args.wdrop, args.not_tied)
 
 # OUR MODEL (PARTICLE FILTER LM)
@@ -146,11 +148,11 @@ try:
         train_loss = model.train_epoch(corpus, train_data, criterion, optimizer, epoch, args)
 
         # let's ignore ASGD for now
-        val_loss = model.evaluate(corpus, val_data, args, criterion)
+        val_loss, val_nll = model.evaluate(corpus, val_data, args, criterion)
         print('-' * 89)
-        print('| end of epoch {:3d} | time: {:5.2f}s | valid loss {:5.2f} | '
+        print('| end of epoch {:3d} | time: {:5.2f}s | valid loss {:5.2f} | valid NLL {:5.2f} | '
               'valid ppl {:8.2f}'.format(epoch, (time.time() - epoch_start_time),
-                                         val_loss, math.exp(val_loss)))
+                                         val_loss, val_nll, math.exp(val_loss)))
         print('-' * 89)
 
 except KeyboardInterrupt:
