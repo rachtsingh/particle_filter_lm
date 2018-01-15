@@ -67,12 +67,12 @@ class RVAE(nn.Module):
         """
         input: [seq len x batch x V]
         """
-        emb = embedded_dropout(self.inp_embedding, input, dropout=self.dropoute if self.training else 0)
-        # emb = self.inp_embedding(input)
-        emb = self.lockdrop(emb, self.dropouti)
-        raw_output, new_h = self.encoder(emb, hidden)
+        # emb = embedded_dropout(self.inp_embedding, input, dropout=self.dropoute if self.training else 0)
+        emb = self.inp_embedding(input)
+        # emb = self.lockdrop(emb, self.dropouti)
+        output, _ = self.encoder(emb, hidden)
         # output = self.lockdrop(raw_output, self.dropout)
-        output = raw_output
+        pdb.set_trace()
 
         # now I have a [sentence size x batch x nhid] tensor in output
         last_output = output[-1]
