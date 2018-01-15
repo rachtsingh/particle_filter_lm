@@ -17,9 +17,9 @@ parser.add_argument('--dataset', type=str, default='ptb',
                     help='one of [ptb (default), wt2]')
 parser.add_argument('--model', type=str, default='rvae',
                     help='type of model to use (baseline, gaussian_filter, discrete_filter)')
-parser.add_argument('--emsize', type=int, default=400,
+parser.add_argument('--emsize', type=int, default=300,
                     help='size of word embeddings')
-parser.add_argument('--nhid', type=int, default=400,
+parser.add_argument('--nhid', type=int, default=300,
                     help='number of hidden units per layer')
 parser.add_argument('--nlayers', type=int, default=3,
                     help='number of layers')
@@ -27,6 +27,10 @@ parser.add_argument('--lr', type=float, default=5,
                     help='initial learning rate')
 parser.add_argument('--clip', type=float, default=0.25,
                     help='gradient clipping')
+parser.add_argument('--kl-anneal-delay', type=float, default=10,
+                    help='number of epochs to delay increasing the KL divergence contribution')
+parser.add_argument('--kl-anneal-rate', type=float, default=0.0005,
+                    help='amount to increase the KL divergence amount *per batch*')
 parser.add_argument('--epochs', type=int, default=1000,
                     help='upper epoch limit')
 parser.add_argument('--batch_size', type=int, default=80, metavar='N',
@@ -37,7 +41,7 @@ parser.add_argument('--dropout', type=float, default=0.4,
                     help='dropout applied to layers (0 = no dropout)')
 parser.add_argument('--dropouth', type=float, default=0.25,
                     help='dropout for rnn layers (0 = no dropout)')
-parser.add_argument('--dropouti', type=float, default=0.4,
+parser.add_argument('--dropouti', type=float, default=0.1,
                     help='dropout for input embedding layers (0 = no dropout)')
 parser.add_argument('--dropoute', type=float, default=0.1,
                     help='dropout to remove words from embedding layer (0 = no dropout)')
@@ -134,12 +138,10 @@ try:
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()
 
-        if epoch < 5:
+        if epoch < args.kl_anneal_delay:
             args.anneal = 0.0001
-            args.lr = lr
         else:
-            args.anneal = min(epoch/250., 1.)
-            args.lr = lr/2.
+            args.anneal = (epoch - args.kl_anneal_delay) * (500 * args.kl_anneal_rate)
 
         train_loss = model.train_epoch(corpus, train_data, criterion, optimizer, epoch, args)
 

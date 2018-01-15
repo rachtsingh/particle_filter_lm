@@ -64,9 +64,9 @@ class RVAE(nn.Module):
         """
         input: [seq len x batch x V]
         """
-        # emb = embedded_dropout(self.inp_embedding, input, dropout=self.dropoute if self.training else 0)
-        emb = self.inp_embedding(input)
-        # emb = self.lockdrop(emb, self.dropouti)
+        emb = embedded_dropout(self.inp_embedding, input, dropout=self.dropoute if self.training else 0)
+        # emb = self.inp_embedding(input)
+        emb = self.lockdrop(emb, self.dropouti)
         raw_output, new_h = self.encoder(emb, hidden)
         # output = self.lockdrop(raw_output, self.dropout)
         output = raw_output
@@ -106,15 +106,18 @@ class RVAE(nn.Module):
         self.eval()
         args.anneal = 1.
         total_loss = 0
+        total_nll = 0
         total_tokens = 0
         for batch in data_source:
             hidden = self.init_hidden_encoder(batch.batch_size)
             data, targets = batch.text, batch.target
             logits, mean, logvar = self.forward(data, hidden, targets)
             loss, NLL, KL, tokens = self.elbo(logits, data, criterion, mean, logvar, args)
-            total_loss += loss.detach()
+            total_loss += loss.detach().data
+            total_nll += NLL.detach().data
             total_tokens += tokens
-        return total_loss.data[0] / total_tokens
+        print("eval: {:.2f} NLL".format(total_nll[0] / total_loss[0]))
+        return total_loss[0] / total_tokens
 
     def train_epoch(self, corpus, train_data, criterion, optimizer, epoch, args):
         self.train()
@@ -123,6 +126,8 @@ class RVAE(nn.Module):
         total_tokens = 0
         batch_idx = 0
         for batch in train_data:
+            if epoch > args.kl_anneal_delay:
+                args.anneal += args.kl_anneal_rate
             hidden = self.init_hidden_encoder(batch.batch_size)
             optimizer.zero_grad()
             data, targets = batch.text, batch.target
