@@ -70,12 +70,11 @@ class RVAE(nn.Module):
         # emb = embedded_dropout(self.inp_embedding, input, dropout=self.dropoute if self.training else 0)
         emb = self.inp_embedding(input)
         # emb = self.lockdrop(emb, self.dropouti)
-        output, _ = self.encoder(emb, hidden)
+        _, (h, c) = self.encoder(emb, hidden)
         # output = self.lockdrop(raw_output, self.dropout)
-        pdb.set_trace()
 
         # now I have a [sentence size x batch x nhid] tensor in output
-        last_output = output[-1]
+        last_output = h[-1]
         mean = self.mean(last_output)
         logvar = self.logvar(last_output)
         std = (logvar/2).exp()
