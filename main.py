@@ -17,17 +17,25 @@ parser.add_argument('--dataset', type=str, default='ptb',
                     help='one of [ptb (default), wt2]')
 parser.add_argument('--model', type=str, default='rvae',
                     help='type of model to use (baseline, gaussian_filter, discrete_filter)')
-parser.add_argument('--emsize', type=int, default=400,
+parser.add_argument('--emsize', type=int, default=350,
                     help='size of word embeddings')
-parser.add_argument('--nhid', type=int, default=400,
+parser.add_argument('--nhid', type=int, default=200,
                     help='number of hidden units per layer')
 parser.add_argument('--nlayers', type=int, default=3,
                     help='number of layers')
-parser.add_argument('--lr', type=float, default=30,
+parser.add_argument('--z-dim', type=int, default=15,
+                    help='dimensionality of the hidden z')
+parser.add_argument('--lr', type=float, default=0.1,
                     help='initial learning rate')
 parser.add_argument('--clip', type=float, default=0.25,
                     help='gradient clipping')
-parser.add_argument('--epochs', type=int, default=100,
+parser.add_argument('--kl-anneal-delay', type=float, default=10,
+                    help='number of epochs to delay increasing the KL divergence contribution')
+parser.add_argument('--kl-anneal-rate', type=float, default=0.0005,
+                    help='amount to increase the KL divergence amount *per batch*')
+parser.add_argument('--keep-rate', type=float, default=1.,
+                    help='rate at which to keep words during decoders')
+parser.add_argument('--epochs', type=int, default=1000,
                     help='upper epoch limit')
 parser.add_argument('--batch_size', type=int, default=80, metavar='N',
                     help='batch size')
@@ -37,13 +45,13 @@ parser.add_argument('--dropout', type=float, default=0.4,
                     help='dropout applied to layers (0 = no dropout)')
 parser.add_argument('--dropouth', type=float, default=0.25,
                     help='dropout for rnn layers (0 = no dropout)')
-parser.add_argument('--dropouti', type=float, default=0.4,
+parser.add_argument('--dropouti', type=float, default=0.1,
                     help='dropout for input embedding layers (0 = no dropout)')
 parser.add_argument('--dropoute', type=float, default=0.1,
                     help='dropout to remove words from embedding layer (0 = no dropout)')
 parser.add_argument('--wdrop', type=float, default=0.5,
                     help='amount of weight dropout to apply to the RNN hidden to hidden matrix')
-parser.add_argument('--not-tied', action='store_false',
+parser.add_argument('--not-tied', action='store_true',
                     help='tie the word embedding and softmax weights')
 parser.add_argument('--seed', type=int, default=1111,
                     help='random seed')
@@ -93,7 +101,7 @@ if args.model == 'baseline':
 
         model = baseline.RNNModel(ntokens, args.emsize, args.nhid, args.nlayers,
                                   args.dropout, args.dropouth, args.dropouti,
-                                  args.dropoute, args.wdrop, args.not_tied)
+                                  args.dropoute, args.wdrop, not args.not_tied)
 
 # BASELINE RVAE
 if args.model == 'rvae':
@@ -101,8 +109,8 @@ if args.model == 'rvae':
         train_data, val_data, test_data = PTBSeq2Seq.iters(batch_size=args.batch_size, device=device)
         corpus = train_data.dataset.fields['target'].vocab  # includes BOS
         ntokens = len(corpus)
-        model = rvae.RVAE(ntokens, args.emsize, args.nhid, 1, args.dropout, args.dropouth,
-                          args.dropouti, args.dropoute, args.wdrop, args.not_tied)
+        model = rvae.RVAE(ntokens, args.emsize, args.nhid, args.z_dim, 1, args.dropout, args.dropouth,
+                          args.dropouti, args.dropoute, args.wdrop, not args.not_tied)
 
 # OUR MODEL (PARTICLE FILTER LM)
 if args.model == 'filter':
@@ -134,19 +142,19 @@ try:
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()
 
-        if epoch < 10:
-            args.anneal = 0
+        if epoch < args.kl_anneal_delay:
+            args.anneal = 0.0001
         else:
-            args.anneal = min(epoch/50, 1.)
+            args.anneal = (epoch - args.kl_anneal_delay) * (500 * args.kl_anneal_rate)
 
         train_loss = model.train_epoch(corpus, train_data, criterion, optimizer, epoch, args)
 
         # let's ignore ASGD for now
-        val_loss = model.evaluate(corpus, val_data, args, criterion)
+        val_loss, val_nll = model.evaluate(corpus, val_data, args, criterion)
         print('-' * 89)
-        print('| end of epoch {:3d} | time: {:5.2f}s | valid loss {:5.2f} | '
+        print('| end of epoch {:3d} | time: {:5.2f}s | valid loss {:5.2f} | valid NLL {:5.2f} | '
               'valid ppl {:8.2f}'.format(epoch, (time.time() - epoch_start_time),
-                                         val_loss, math.exp(val_loss)))
+                                         val_loss, val_nll, math.exp(val_loss)))
         print('-' * 89)
 
 except KeyboardInterrupt:

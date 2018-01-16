@@ -18,21 +18,25 @@ class RVAE(nn.Module):
     We're using a single layer RNN on both the encoder and decoder side
     """
 
-    def __init__(self, ntoken, ninp, nhid, nlayers, dropout=0.5, dropouth=0.5,
+    def __init__(self, ntoken, ninp, nhid, z_dim, nlayers, dropout=0.5, dropouth=0.5,
                  dropouti=0.5, dropoute=0.1, wdrop=0, tie_weights=True):
         super(RVAE, self).__init__()
         self.lockdrop = LockedDropout()
-        self.inp_embedding = nn.Embedding(ntoken, ninp)
 
         # it's not a complicated model, these are the main parameters
+        # in order of how they are called
+        self.inp_embedding = nn.Embedding(ntoken, ninp)
         self.encoder = torch.nn.LSTM(ninp, nhid, 1, dropout=0)
-        self.mean = nn.Linear(nhid, 2 * nhid)
-        self.logvar = nn.Linear(nhid, 2 * nhid)
-        self.decoder = torch.nn.LSTM(ninp, nhid, 1, dropout=0)
+        
+        self.mean = nn.Linear(nhid, z_dim)
+        self.logvar = nn.Linear(nhid, z_dim)
+        self.samples_to_hidden = nn.Linear(z_dim, 2 * nhid)
 
-        self.out_embedding = nn.Linear(nhid, ntoken)
+        self.decoder = torch.nn.LSTM(ninp + z_dim, nhid, 1, dropout=0)
+        self.out_linear = nn.Linear(nhid, ninp)
+        self.out_embedding = nn.Linear(ninp, ntoken)
         if tie_weights:
-            assert nhid == ninp, "nhidden has to equal ninp for tying"
+            print("tying weights")
             self.out_embedding.weight = self.inp_embedding.weight
 
         self.init_weights()
@@ -53,25 +57,25 @@ class RVAE(nn.Module):
         self.out_embedding.bias.data.fill_(0)
         self.out_embedding.weight.data.uniform_(-initrange, initrange)
 
-    def init_hidden_encoder(self, bsz):
+    def init_hidden(self, bsz, dim):
         weight = next(self.parameters()).data
-        chosen_size = self.nhid
-        return (Variable(weight.new(1, bsz, chosen_size).zero_()),
-                Variable(weight.new(1, bsz, chosen_size).zero_()))
+        return (Variable(weight.new(1, bsz, dim).zero_()),
+                Variable(weight.new(1, bsz, dim).zero_()))
 
-    def forward(self, input, hidden, targets, return_h=False):
+    def forward(self, input, targets, args, return_h=False):
         """
-        input: [seq len x batch x V]
+        input: [seq len x batch]
         """
+        seq_len, batch_sz = input.size()
         # emb = embedded_dropout(self.inp_embedding, input, dropout=self.dropoute if self.training else 0)
         emb = self.inp_embedding(input)
+        hidden = self.init_hidden(batch_sz, self.nhid)
         # emb = self.lockdrop(emb, self.dropouti)
-        raw_output, new_h = self.encoder(emb, hidden)
+        _, (h, c) = self.encoder(emb, hidden)
         # output = self.lockdrop(raw_output, self.dropout)
-        output = raw_output
 
         # now I have a [sentence size x batch x nhid] tensor in output
-        last_output = output[-1]
+        last_output = h[-1]
         mean = self.mean(last_output)
         logvar = self.logvar(last_output)
         std = (logvar/2).exp()
@@ -79,18 +83,23 @@ class RVAE(nn.Module):
         if torch.cuda.is_available():
             eps = eps.cuda()
         samples = (Variable(eps) * std) + mean
-        
-        a, b = torch.chunk(samples, 2, 1)
-        a = a.contiguous()
-        b = b.contiguous()
+        samples = samples.unsqueeze(0).expand(seq_len, batch_sz, samples.size(1))
 
-        # now we pass this through the decoder
+        # now we pass this through the decoder, also adding the source sentence offset
         # targets has <bos> and doesn't have <eos>
-        out_emb = self.inp_embedding(targets).contiguous()
-        raw_out, _ = self.decoder(out_emb, (a.unsqueeze(0), b.unsqueeze(0)))
+        # also, we weaken decoder by removing some words
+        msk = Variable(torch.bernoulli(torch.ones(targets.size()) * args.keep_rate).long().cuda())
+
+        # seq_len x batch_sz x ninp
+        out_emb = self.inp_embedding(targets * msk).contiguous()
+
+        decoder_input = torch.cat([out_emb, samples], 2)
+
+        hidden = self.init_hidden(batch_sz, self.nhid)
+        raw_out, _ = self.decoder(decoder_input, hidden)
         seq_len, batches, nhid = raw_out.size()
         resized = raw_out.view(seq_len * batches, nhid).contiguous()
-        decoder_output = self.out_embedding(resized)
+        decoder_output = self.out_embedding(self.out_linear(resized))
         logits = decoder_output.view(seq_len, batches, self.ntoken)
 
         return logits, mean, logvar
@@ -103,16 +112,19 @@ class RVAE(nn.Module):
 
     def evaluate(self, corpus, data_source, args, criterion):
         self.eval()
+        args.anneal = 1.
         total_loss = 0
+        total_nll = 0
         total_tokens = 0
         for batch in data_source:
-            hidden = self.init_hidden_encoder(batch.batch_size)
             data, targets = batch.text, batch.target
-            logits, mean, logvar = self.forward(data, hidden, targets)
-            loss, tokens = self.elbo(logits, targets, criterion, mean, logvar, 1, args)
-            total_loss += loss.detach()
+            logits, mean, logvar = self.forward(data, targets, args)
+            loss, NLL, KL, tokens = self.elbo(logits, data, criterion, mean, logvar, args)
+            total_loss += loss.detach().data
+            total_nll += NLL.detach().data
             total_tokens += tokens
-        return total_loss[0] / total_tokens
+        print("eval: {:.2f} NLL".format(total_nll[0] / total_loss[0]))
+        return total_loss[0] / total_tokens, total_nll[0] / total_tokens
 
     def train_epoch(self, corpus, train_data, criterion, optimizer, epoch, args):
         self.train()
@@ -121,13 +133,16 @@ class RVAE(nn.Module):
         total_tokens = 0
         batch_idx = 0
         for batch in train_data:
-            hidden = self.init_hidden_encoder(batch.batch_size)
+            if epoch > args.kl_anneal_delay:
+                args.anneal += args.kl_anneal_rate
             optimizer.zero_grad()
             data, targets = batch.text, batch.target
-            logits, mean, logvar = self.forward(data, hidden, targets)
-            elbo, NLL, KL, tokens = self.elbo(logits, targets, criterion, mean, logvar, args)
+            logits, mean, logvar = self.forward(data, targets, args)
+            elbo, NLL, KL, tokens = self.elbo(logits, data, criterion, mean, logvar, args)
             loss = elbo/tokens
             loss.backward()
+            torch.nn.utils.clip_grad_norm(self.parameters(), args.clip)
+            optimizer.step()
 
             total_loss += elbo.detach()
             total_tokens += tokens
