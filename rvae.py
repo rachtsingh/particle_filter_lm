@@ -32,7 +32,7 @@ class RVAE(nn.Module):
         self.logvar = nn.Linear(nhid, z_dim)
         self.samples_to_hidden = nn.Linear(z_dim, 2 * nhid)
 
-        self.decoder = torch.nn.LSTM(ninp, nhid, 1, dropout=0)
+        self.decoder = torch.nn.LSTM(ninp + z_dim, nhid, 1, dropout=0)
         self.out_linear = nn.Linear(nhid, ninp)
         self.out_embedding = nn.Linear(ninp, ntoken)
         if tie_weights:
@@ -57,18 +57,19 @@ class RVAE(nn.Module):
         self.out_embedding.bias.data.fill_(0)
         self.out_embedding.weight.data.uniform_(-initrange, initrange)
 
-    def init_hidden_encoder(self, bsz):
+    def init_hidden(self, bsz, dim):
         weight = next(self.parameters()).data
-        chosen_size = self.nhid
-        return (Variable(weight.new(1, bsz, chosen_size).zero_()),
-                Variable(weight.new(1, bsz, chosen_size).zero_()))
+        return (Variable(weight.new(1, bsz, dim).zero_()),
+                Variable(weight.new(1, bsz, dim).zero_()))
 
-    def forward(self, input, hidden, targets, args, return_h=False):
+    def forward(self, input, targets, args, return_h=False):
         """
-        input: [seq len x batch x V]
+        input: [seq len x batch]
         """
+        seq_len, batch_sz = input.size()
         # emb = embedded_dropout(self.inp_embedding, input, dropout=self.dropoute if self.training else 0)
         emb = self.inp_embedding(input)
+        hidden = self.init_hidden(batch_sz, self.nhid)
         # emb = self.lockdrop(emb, self.dropouti)
         _, (h, c) = self.encoder(emb, hidden)
         # output = self.lockdrop(raw_output, self.dropout)
@@ -82,22 +83,25 @@ class RVAE(nn.Module):
         if torch.cuda.is_available():
             eps = eps.cuda()
         samples = (Variable(eps) * std) + mean
-        
-        a, b = torch.chunk(self.samples_to_hidden(samples), 2, 1)
-        a = a.contiguous()
-        b = b.contiguous()
+        samples = samples.unsqueeze(0).expand(seq_len, batch_sz, samples.size(1))
 
         # now we pass this through the decoder, also adding the source sentence offset
         # targets has <bos> and doesn't have <eos>
         # also, we weaken decoder by removing some words
         msk = Variable(torch.bernoulli(torch.ones(targets.size()) * args.keep_rate).long().cuda())
+
+        # seq_len x batch_sz x ninp
         out_emb = self.inp_embedding(targets * msk).contiguous()
-        raw_out, _ = self.decoder(out_emb, (a.unsqueeze(0), b.unsqueeze(0)))
+
+        decoder_input = torch.cat([out_emb, samples], 2)
+
+        hidden = self.init_hidden(batch_sz, self.nhid)
+        raw_out, _ = self.decoder(decoder_input, hidden)
         seq_len, batches, nhid = raw_out.size()
         resized = raw_out.view(seq_len * batches, nhid).contiguous()
         decoder_output = self.out_embedding(self.out_linear(resized))
         logits = decoder_output.view(seq_len, batches, self.ntoken)
-    
+
         return logits, mean, logvar
 
     def elbo(self, logits, targets, criterion, mean, logvar, args):
@@ -113,9 +117,8 @@ class RVAE(nn.Module):
         total_nll = 0
         total_tokens = 0
         for batch in data_source:
-            hidden = self.init_hidden_encoder(batch.batch_size)
             data, targets = batch.text, batch.target
-            logits, mean, logvar = self.forward(data, hidden, targets, args)
+            logits, mean, logvar = self.forward(data, targets, args)
             loss, NLL, KL, tokens = self.elbo(logits, data, criterion, mean, logvar, args)
             total_loss += loss.detach().data
             total_nll += NLL.detach().data
@@ -132,11 +135,10 @@ class RVAE(nn.Module):
         for batch in train_data:
             if epoch > args.kl_anneal_delay:
                 args.anneal += args.kl_anneal_rate
-            hidden = self.init_hidden_encoder(batch.batch_size)
             optimizer.zero_grad()
             data, targets = batch.text, batch.target
-            logits, mean, logvar = self.forward(data, hidden, targets, args)
-            elbo, NLL, KL, tokens = self.elbo(logits, targets, criterion, mean, logvar, args)
+            logits, mean, logvar = self.forward(data, targets, args)
+            elbo, NLL, KL, tokens = self.elbo(logits, data, criterion, mean, logvar, args)
             loss = elbo/tokens
             loss.backward()
             torch.nn.utils.clip_grad_norm(self.parameters(), args.clip)
