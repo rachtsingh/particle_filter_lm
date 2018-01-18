@@ -17,23 +17,23 @@ parser.add_argument('--dataset', type=str, default='ptb',
                     help='one of [ptb (default), wt2]')
 parser.add_argument('--model', type=str, default='rvae',
                     help='type of model to use (baseline, gaussian_filter, discrete_filter)')
-parser.add_argument('--emsize', type=int, default=350,
+parser.add_argument('--emsize', type=int, default=1024,
                     help='size of word embeddings')
-parser.add_argument('--nhid', type=int, default=200,
+parser.add_argument('--nhid', type=int, default=512,
                     help='number of hidden units per layer')
 parser.add_argument('--nlayers', type=int, default=3,
                     help='number of layers')
-parser.add_argument('--z-dim', type=int, default=15,
+parser.add_argument('--z-dim', type=int, default=25,
                     help='dimensionality of the hidden z')
 parser.add_argument('--lr', type=float, default=0.1,
                     help='initial learning rate')
-parser.add_argument('--clip', type=float, default=0.25,
+parser.add_argument('--clip', type=float, default=5.0,
                     help='gradient clipping')
 parser.add_argument('--kl-anneal-delay', type=float, default=10,
                     help='number of epochs to delay increasing the KL divergence contribution')
 parser.add_argument('--kl-anneal-rate', type=float, default=0.0005,
                     help='amount to increase the KL divergence amount *per batch*')
-parser.add_argument('--keep-rate', type=float, default=1.,
+parser.add_argument('--keep-rate', type=float, default=0.5,
                     help='rate at which to keep words during decoders')
 parser.add_argument('--epochs', type=int, default=1000,
                     help='upper epoch limit')
@@ -143,7 +143,7 @@ try:
         epoch_start_time = time.time()
 
         if epoch < args.kl_anneal_delay:
-            args.anneal = 0.0001
+            args.anneal = 0.001
         else:
             args.anneal = (epoch - args.kl_anneal_delay) * (500 * args.kl_anneal_rate)
 
