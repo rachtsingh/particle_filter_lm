@@ -27,7 +27,7 @@ class PFLM(nn.Module):
         # it's not a complicated model, these are the main parameters
         # in order of how they are called
         self.inp_embedding = nn.Embedding(ntoken, ninp)
-        self.encoder = torch.nn.LSTM(ninp, nhid, 1, dropout=0)
+        self.encoder = torch.nn.LSTM(ninp, nhid, 1, dropout=0, bidirectional=True)
         
         self.mean = nn.Linear(z_dim, z_dim)
         self.logvar = nn.Linear(z_dim, z_dim)
@@ -73,7 +73,7 @@ class PFLM(nn.Module):
         emb = self.inp_embedding(input)
         hidden = self.init_hidden(batch_sz, self.nhid)
         # emb = self.lockdrop(emb, self.dropouti)
-        _, (h, c) = self.encoder(emb, hidden)
+        hidden_states, (h, c) = self.encoder(emb, hidden)
 
         # now I have a [sentence size x batch x nhid] tensor in output
         last_output = h[-1]
@@ -86,7 +86,7 @@ class PFLM(nn.Module):
         h = h.squeeze(0)
         c = c.squeeze(0)
         for i in range(seq_len):
-            h, c = self.z_decoder(last_output, (h, c))
+            h, c = self.z_decoder(hidden_states[i], (h, c))
             mean, logvar = self.mean(h), self.logvar(h)
             std = (logvar/2).exp()
             eps = Variable(torch.randn(mean.size()))
