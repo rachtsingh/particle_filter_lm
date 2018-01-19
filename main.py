@@ -26,11 +26,11 @@ parser.add_argument('--nlayers', type=int, default=3,
                     help='number of layers')
 parser.add_argument('--z-dim', type=int, default=25,
                     help='dimensionality of the hidden z')
-parser.add_argument('--lr', type=float, default=0.1,
+parser.add_argument('--lr', type=float, default=1.0,
                     help='initial learning rate')
 parser.add_argument('--clip', type=float, default=5.0,
                     help='gradient clipping')
-parser.add_argument('--kl-anneal-delay', type=float, default=10,
+parser.add_argument('--kl-anneal-delay', type=float, default=100,
                     help='number of epochs to delay increasing the KL divergence contribution')
 parser.add_argument('--kl-anneal-rate', type=float, default=0.0005,
                     help='amount to increase the KL divergence amount *per batch*')
@@ -145,7 +145,7 @@ try:
         epoch_start_time = time.time()
 
         if epoch < args.kl_anneal_delay:
-            args.anneal = 0.001
+            args.anneal = 0.000
         else:
             args.anneal = min((epoch - args.kl_anneal_delay) * (500 * args.kl_anneal_rate), 1.)
 

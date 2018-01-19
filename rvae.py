@@ -133,7 +133,7 @@ class RVAE(nn.Module):
         total_tokens = 0
         batch_idx = 0
         for batch in train_data:
-            if epoch > args.kl_anneal_delay:
+            if epoch > args.kl_anneal_delay and args.anneal < 1.:
                 args.anneal += args.kl_anneal_rate
             optimizer.zero_grad()
             data, targets = batch.text, batch.target
