@@ -17,7 +17,7 @@ parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Lang
 parser.add_argument('--dataset', type=str, default='ptb',
                     help='one of [ptb (default), wt2]')
 parser.add_argument('--model', type=str, default='rvae',
-                    help='type of model to use (baseline, gaussian_filter, discrete_filter)')
+                    help='type of model to use (baseline, rvae, filter)')
 parser.add_argument('--emsize', type=int, default=512,
                     help='size of word embeddings')
 parser.add_argument('--nhid', type=int, default=256,

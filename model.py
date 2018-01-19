@@ -59,10 +59,10 @@ class PFLM(nn.Module):
         self.out_embedding.bias.data.fill_(0)
         self.out_embedding.weight.data.uniform_(-initrange, initrange)
 
-    def init_hidden(self, bsz, dim):
+    def init_hidden(self, bsz, dim, directions=1):
         weight = next(self.parameters()).data
-        return (Variable(weight.new(1, bsz, dim).zero_()),
-                Variable(weight.new(1, bsz, dim).zero_()))
+        return (Variable(weight.new(directions, bsz, dim).zero_()),
+                Variable(weight.new(directions, bsz, dim).zero_()))
 
     def forward(self, input, targets, args, return_h=False):
         """
@@ -70,13 +70,12 @@ class PFLM(nn.Module):
         """
         seq_len, batch_sz = input.size()
         # emb = embedded_dropout(self.inp_embedding, input, dropout=self.dropoute if self.training else 0)
+        
         emb = self.inp_embedding(input)
-        hidden = self.init_hidden(batch_sz, self.nhid)
         # emb = self.lockdrop(emb, self.dropouti)
+        
+        hidden = self.init_hidden(batch_sz, self.nhid, 2) # bidirectional
         hidden_states, (h, c) = self.encoder(emb, hidden)
-
-        # now I have a [sentence size x batch x nhid] tensor in output
-        last_output = h[-1]
 
         # run the z-decoder at this point
         z_samples = []
