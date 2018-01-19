@@ -145,7 +145,12 @@ try:
         if epoch < args.kl_anneal_delay:
             args.anneal = 0.001
         else:
-            args.anneal = (epoch - args.kl_anneal_delay) * (500 * args.kl_anneal_rate)
+            args.anneal = min((epoch - args.kl_anneal_delay) * (500 * args.kl_anneal_rate), 1.)
+
+        if epoch > 50:
+            args.lr = 0.95 * args.lr
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = args.lr
 
         train_loss = model.train_epoch(corpus, train_data, criterion, optimizer, epoch, args)
 
