@@ -11,6 +11,7 @@ from utils import get_sha
 
 import baseline
 import rvae
+import model
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
 parser.add_argument('--dataset', type=str, default='ptb',
@@ -119,7 +120,8 @@ if args.model == 'filter':
         corpus = train_data.dataset.fields['target'].vocab
         ntokens = len(corpus)
 
-        # gotta figure this out
+        model = model.PFLM(ntokens, args.emsize, args.nhid, args.z_dim, 1, args.dropout, args.dropouth,
+                           args.dropouti, args.dropoute, args.wdrop, not args.not_tied)
 
 if args.cuda and torch.cuda.is_available():
     model.cuda()
