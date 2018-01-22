@@ -11,34 +11,31 @@ from locked_dropout import LockedDropout  # noqa: F401
 from embed_regularize import embedded_dropout  # noqa: F401
 
 
-
 class PFLM(nn.Module):
     """
     Here, encoder refers to the encoding RNN, unlike in baseline.py
-    Note that if tie_weights = True, then ninp = nhid
     We're using a single layer RNN on the encoder side, but the decoder is essentially two RNNs
     """
 
     def __init__(self, ntoken, ninp, nhid, z_dim, nlayers, dropout=0.5, dropouth=0.5,
-                 dropouti=0.5, dropoute=0.1, wdrop=0, tie_weights=True):
+                 dropouti=0.5, dropoute=0.1, wdrop=0):
         super(PFLM, self).__init__()
-        self.lockdrop = LockedDropout()
-
-        # it's not a complicated model, these are the main parameters
-        # in order of how they are called
+        
+        # encoder side
         self.inp_embedding = nn.Embedding(ntoken, ninp)
         self.encoder = torch.nn.LSTM(ninp, nhid, 1, dropout=0, bidirectional=True)
+        self.enc = nn.ModuleList([self.inp_embedding, self.encoder])
         
+        # latent stuff
         self.mean = nn.Linear(z_dim, z_dim)
         self.logvar = nn.Linear(z_dim, z_dim)
-        self.z_decoder = nn.LSTMCell(nhid, z_dim) # we're going to feed the output from the last step in at every input
+
+        # decoder side
+        self.z_decoder = nn.LSTMCell(2 * nhid, z_dim) # we're going to feed the output from the last step in at every input
         self.decoder = torch.nn.LSTM(z_dim + ninp, nhid, 1, dropout=0)
 
-        self.out_linear = nn.Linear(nhid, ninp)
-        self.out_embedding = nn.Linear(ninp, ntoken)
-        if tie_weights:
-            print("tying weights")
-            self.out_embedding.weight = self.inp_embedding.weight
+        self.out_embedding = nn.Linear(nhid, ntoken)
+        self.dec = nn.ModuleList([self.z_decoder, self.decoder, self.out_embedding])
 
         self.init_weights()
 
@@ -47,11 +44,10 @@ class PFLM(nn.Module):
         self.nhid = nhid
         self.ntoken = ntoken
         self.nlayers = nlayers
-        self.dropout = dropout
+        self.dropoutp = dropout
         self.dropouti = dropouti
         self.dropouth = dropouth
         self.dropoute = dropoute
-        self.tie_weights = tie_weights
 
     def init_weights(self):
         initrange = 0.1

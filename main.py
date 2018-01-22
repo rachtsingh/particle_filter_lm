@@ -20,21 +20,21 @@ parser.add_argument('--model', type=str, default='rvae',
                     help='type of model to use (baseline, rvae, filter)')
 parser.add_argument('--emsize', type=int, default=512,
                     help='size of word embeddings')
-parser.add_argument('--nhid', type=int, default=256,
+parser.add_argument('--nhid', type=int, default=1024,
                     help='number of hidden units per layer')
 parser.add_argument('--nlayers', type=int, default=1,
                     help='number of layers')
-parser.add_argument('--z-dim', type=int, default=25,
+parser.add_argument('--z-dim', type=int, default=32,
                     help='dimensionality of the hidden z')
 parser.add_argument('--lr', type=float, default=1.0,
                     help='initial learning rate')
-parser.add_argument('--clip', type=float, default=5.0,
+parser.add_argument('--clip', type=float, default=3.0,
                     help='gradient clipping')
-parser.add_argument('--kl-anneal-delay', type=float, default=100,
+parser.add_argument('--kl-anneal-delay', type=float, default=10,
                     help='number of epochs to delay increasing the KL divergence contribution')
-parser.add_argument('--kl-anneal-rate', type=float, default=0.0005,
+parser.add_argument('--kl-anneal-rate', type=float, default=0.0002,
                     help='amount to increase the KL divergence amount *per batch*')
-parser.add_argument('--keep-rate', type=float, default=0.2,
+parser.add_argument('--keep-rate', type=float, default=0.5,
                     help='rate at which to keep words during decoders')
 parser.add_argument('--epochs', type=int, default=1000,
                     help='upper epoch limit')
@@ -42,7 +42,7 @@ parser.add_argument('--batch_size', type=int, default=80, metavar='N',
                     help='batch size')
 parser.add_argument('--bptt', type=int, default=70,
                     help='sequence length')
-parser.add_argument('--dropout', type=float, default=0.4,
+parser.add_argument('--dropout', type=float, default=0.5,
                     help='dropout applied to layers (0 = no dropout)')
 parser.add_argument('--dropouth', type=float, default=0.25,
                     help='dropout for rnn layers (0 = no dropout)')
@@ -54,13 +54,15 @@ parser.add_argument('--wdrop', type=float, default=0.5,
                     help='amount of weight dropout to apply to the RNN hidden to hidden matrix')
 parser.add_argument('--not-tied', action='store_true',
                     help='tie the word embedding and softmax weights')
+parser.add_argument('--max-kl-penalty', type=float, default=0.,
+                    help='maximum KL penalty to allow (essentially gradient clips the KL)')
 parser.add_argument('--seed', type=int, default=1111,
                     help='random seed')
 parser.add_argument('--nonmono', type=int, default=5,
                     help='random seed')
 parser.add_argument('--cuda', action='store_false',
                     help='use CUDA')
-parser.add_argument('--log-interval', type=int, default=125, metavar='N',
+parser.add_argument('--log-interval', type=int, default=100, metavar='N',
                     help='report interval')
 randomhash = ''.join(str(time.time()).split('.'))
 parser.add_argument('--save', type=str,  default=randomhash+'.pt',
@@ -127,13 +129,16 @@ if args.cuda and torch.cuda.is_available():
     model.cuda()
 total_params = sum(x.size()[0] * x.size()[1] if len(x.size()) > 1 else x.size()[0] for x in model.parameters())
 
-print("SHA: {}".format(get_sha().strip()))
-print('Args:', args)
-print('Model total parameters:', total_params)
+print("sha: {}".format(get_sha().strip()))
+print('args:', args)
+print('model total parameters:', total_params)
+print('model architecture:')
+print(model)
 
 criterion = nn.CrossEntropyLoss()
 
 # Loop over epochs.
+args.anneal = 0.01
 lr = args.lr
 best_val_loss = []
 stored_loss = 100000000
@@ -145,12 +150,10 @@ try:
         epoch_start_time = time.time()
 
         if epoch < args.kl_anneal_delay:
-            args.anneal = 0.000
-        else:
-            args.anneal = min((epoch - args.kl_anneal_delay) * (500 * args.kl_anneal_rate), 1.)
+            args.anneal = 0.01
 
-        if epoch > 50:
-            args.lr = 0.95 * args.lr
+        if epoch in (15, 25, 35, 45) and args.model == 'rvae':
+            args.lr = 0.7 * args.lr
             for param_group in optimizer.param_groups:
                 param_group['lr'] = args.lr
 
