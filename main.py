@@ -24,6 +24,8 @@ parser.add_argument('--nhid', type=int, default=1024,
                     help='number of hidden units per layer')
 parser.add_argument('--nlayers', type=int, default=1,
                     help='number of layers')
+parser.add_argument('--no-autoregressive-prior', action='store_true',
+                    help='disable the autoregressive prior on z for the filter model')
 parser.add_argument('--z-dim', type=int, default=32,
                     help='dimensionality of the hidden z')
 parser.add_argument('--lr', type=float, default=1.0,
@@ -123,7 +125,7 @@ if args.model == 'filter':
         ntokens = len(corpus)
 
         model = model.PFLM(ntokens, args.emsize, args.nhid, args.z_dim, 1, args.dropout, args.dropouth,
-                           args.dropouti, args.dropoute, args.wdrop, not args.not_tied)
+                           args.dropouti, args.dropoute, args.wdrop, not args.not_tied, not args.no_autoregressive_prior)
 
 if args.cuda and torch.cuda.is_available():
     model.cuda()

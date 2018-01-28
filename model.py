@@ -18,24 +18,29 @@ class PFLM(nn.Module):
     """
 
     def __init__(self, ntoken, ninp, nhid, z_dim, nlayers, dropout=0.5, dropouth=0.5,
-                 dropouti=0.5, dropoute=0.1, wdrop=0):
+                 dropouti=0.5, dropoute=0.1, wdrop=0., autoregressive_prior=False):
         super(PFLM, self).__init__()
         
         # encoder side
         self.inp_embedding = nn.Embedding(ntoken, ninp)
         self.encoder = torch.nn.LSTM(ninp, nhid, 1, dropout=0, bidirectional=True)
         self.enc = nn.ModuleList([self.inp_embedding, self.encoder])
-        
+
         # latent stuff
         self.mean = nn.Linear(z_dim, z_dim)
         self.logvar = nn.Linear(z_dim, z_dim)
 
+        if autoregressive_prior:
+            self.ar_prior_mean = nn.LSTMCell(z_dim, z_dim)
+
         # decoder side
         self.z_decoder = nn.LSTMCell(2 * nhid, z_dim) # we're going to feed the output from the last step in at every input
+        self.dec_embedding = nn.Embedding(ntoken, ninp)
+        self.dropout = nn.Dropout(dropout)
         self.decoder = torch.nn.LSTM(z_dim + ninp, nhid, 1, dropout=0)
 
         self.out_embedding = nn.Linear(nhid, ntoken)
-        self.dec = nn.ModuleList([self.z_decoder, self.decoder, self.out_embedding])
+        self.dec = nn.ModuleList([self.z_decoder, self.dec_embedding, self.decoder, self.out_embedding])
 
         self.init_weights()
 
@@ -48,6 +53,8 @@ class PFLM(nn.Module):
         self.dropouti = dropouti
         self.dropouth = dropouth
         self.dropoute = dropoute
+
+        self.aprior = autoregressive_prior
 
     def init_weights(self):
         initrange = 0.1
@@ -65,11 +72,7 @@ class PFLM(nn.Module):
         input: [seq len x batch]
         """
         seq_len, batch_sz = input.size()
-        # emb = embedded_dropout(self.inp_embedding, input, dropout=self.dropoute if self.training else 0)
-        
         emb = self.inp_embedding(input)
-        # emb = self.lockdrop(emb, self.dropouti)
-        
         hidden = self.init_hidden(batch_sz, self.nhid, 2) # bidirectional
         hidden_states, (h, c) = self.encoder(emb, hidden)
 
@@ -77,17 +80,31 @@ class PFLM(nn.Module):
         z_samples = []
         means = []
         logvars = []
+        if self.aprior:
+            prior_means = []
+            p_h, p_c = self.init_hidden(batch_sz, self.z_dim) # initially zero
         h, c = self.init_hidden(batch_sz, self.z_dim)
         h = h.squeeze(0)
         c = c.squeeze(0)
         for i in range(seq_len):
             h, c = self.z_decoder(hidden_states[i], (h, c))
             mean, logvar = self.mean(h), self.logvar(h)
+
+            # add the offset prior mean before mutation
+            if self.aprior:
+                prior_means.append(p_h)
+            
+            # build the next z sample
             std = (logvar/2).exp()
             eps = Variable(torch.randn(mean.size()))
             if torch.cuda.is_available():
                 eps = eps.cuda()
             h = (eps * std) + mean
+           
+            if self.aprior:
+                # build the next mean prediction, feeding in this z
+                p_h, p_c = self.ar_prior_mean(h, (p_h, p_c))
+
             z_samples.append(h)
             means.append(mean)
             logvars.append(logvar)
@@ -95,32 +112,31 @@ class PFLM(nn.Module):
         # now we pass this through the decoder, also adding the source sentence offset
         # targets has <bos> and doesn't have <eos>
         # also, we weaken decoder by removing some words
-        msk = Variable(torch.bernoulli(torch.ones(targets.size()) * args.keep_rate).long())
-        if torch.cuda.is_available():
-            msk = msk.cuda()
-
-        # seq_len x batch_sz x ninp
-        out_emb = self.inp_embedding(targets * msk).contiguous()
-
+        out_emb = self.dropout(self.dec_embedding(targets))
         samples = torch.stack(z_samples)
-
         decoder_input = torch.cat([out_emb, samples], 2)
 
         hidden = self.init_hidden(batch_sz, self.nhid)
         raw_out, _ = self.decoder(decoder_input, hidden)
         seq_len, batches, nhid = raw_out.size()
-        resized = raw_out.view(seq_len * batches, nhid).contiguous()
-        decoder_output = self.out_embedding(self.out_linear(resized))
-        logits = decoder_output.view(seq_len, batches, self.ntoken)
+        resized = raw_out.view(seq_len * batches, nhid)
+        logits = self.out_embedding(resized).view(seq_len, batches, self.ntoken)
 
-        return logits, means, logvars
+        if self.aprior:
+            return logits, means, logvars, prior_means
+        else:
+            return logits, means, logvars
 
-    def elbo(self, logits, targets, criterion, means, logvars, args):
+    def elbo(self, logits, targets, criterion, means, logvars, args, prior_means=None):
         seq_len, batch_size, ntokens = logits.size()
         NLL = seq_len * batch_size * criterion(logits.view(-1, ntokens), targets.view(-1))
         KL = 0
-        for mean, logvar in zip(means, logvars):
-            KL += -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
+        if prior_means is None:
+            for mean, logvar in zip(means, logvars):
+                KL += -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
+        else:
+            for mean, prior_mean, logvar in zip(means, prior_means, logvars):
+                KL += -0.5 * torch.sum(1 + logvar - (mean - prior_mean).pow(2) - logvar.exp())
         return (NLL + args.anneal * KL), NLL, KL, seq_len * batch_size
 
     def evaluate(self, corpus, data_source, args, criterion):
@@ -150,8 +166,12 @@ class PFLM(nn.Module):
                 args.anneal += args.kl_anneal_rate
             optimizer.zero_grad()
             data, targets = batch.text, batch.target
-            logits, means, logvars = self.forward(data, targets, args)
-            elbo, NLL, KL, tokens = self.elbo(logits, data, criterion, means, logvars, args)
+            if self.aprior:
+                logits, means, logvars, prior_means = self.forward(data, targets, args)
+                elbo, NLL, KL, tokens = self.elbo(logits, data, criterion, means, logvars, args, prior_means=prior_means)
+            else:
+                logits, means, logvars = self.forward(data, targets, args)
+                elbo, NLL, KL, tokens = self.elbo(logits, data, criterion, means, logvars, args)
             loss = elbo/tokens
             loss.backward()
             torch.nn.utils.clip_grad_norm(self.parameters(), args.clip)
