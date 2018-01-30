@@ -1,5 +1,6 @@
 import argparse
 import time
+import sys
 import math
 import numpy as np
 import torch
@@ -58,6 +59,10 @@ parser.add_argument('--not-tied', action='store_true',
                     help='tie the word embedding and softmax weights')
 parser.add_argument('--max-kl-penalty', type=float, default=0.,
                     help='maximum KL penalty to allow (essentially gradient clips the KL)')
+parser.add_argument('--no-iwae', action='store_true',
+                    help='whether to disable reporting of the IWAE metric instead of KL')
+parser.add_argument('--num-importance-samples', type=int, default=3,
+                    help='number of samples to take for IWAE')
 parser.add_argument('--seed', type=int, default=1111,
                     help='random seed')
 parser.add_argument('--nonmono', type=int, default=5,
@@ -76,6 +81,8 @@ parser.add_argument('--beta', type=float, default=1,
 parser.add_argument('--wdecay', type=float, default=1.2e-6,
                     help='weight decay applied to all weights')
 args = parser.parse_args()
+
+print("running {}".format(' '.join(sys.argv)))
 
 # Set the random seed manually for reproducibility.
 np.random.seed(args.seed)
@@ -125,7 +132,7 @@ if args.model == 'filter':
         ntokens = len(corpus)
 
         model = model.PFLM(ntokens, args.emsize, args.nhid, args.z_dim, 1, args.dropout, args.dropouth,
-                           args.dropouti, args.dropoute, args.wdrop, not args.not_tied, not args.no_autoregressive_prior)
+                           args.dropouti, args.dropoute, args.wdrop, not args.no_autoregressive_prior)
 
 if args.cuda and torch.cuda.is_available():
     model.cuda()
@@ -137,7 +144,7 @@ print('model total parameters:', total_params)
 print('model architecture:')
 print(model)
 
-criterion = nn.CrossEntropyLoss()
+criterion = nn.CrossEntropyLoss(reduce=args.no_iwae)
 
 # Loop over epochs.
 args.anneal = 0.01
@@ -152,21 +159,22 @@ try:
         epoch_start_time = time.time()
 
         if epoch < args.kl_anneal_delay:
-            args.anneal = 0.01
+            args.anneal = 0.0001
 
         if epoch in (15, 25, 35, 45) and args.model == 'rvae':
             args.lr = 0.7 * args.lr
             for param_group in optimizer.param_groups:
                 param_group['lr'] = args.lr
 
+        val_loss, val_nll = model.evaluate(corpus, val_data, args, criterion, not args.no_iwae, args.num_importance_samples)
         train_loss = model.train_epoch(corpus, train_data, criterion, optimizer, epoch, args)
 
         # let's ignore ASGD for now
-        val_loss, val_nll = model.evaluate(corpus, val_data, args, criterion)
+        val_loss, val_nll = model.evaluate(corpus, val_data, args, criterion, not args.no_iwae, args.num_importance_samples)
         print('-' * 89)
         print('| end of epoch {:3d} | time: {:5.2f}s | valid loss {:5.2f} | valid NLL {:5.2f} | '
-              'valid ppl {:8.2f}'.format(epoch, (time.time() - epoch_start_time),
-                                         val_loss, val_nll, math.exp(val_loss)))
+              'valid ppl {:8.2f}'.format(epoch, (time.time() - epoch_start_time), val_loss, val_nll, 
+                                         math.exp(val_loss) if val_loss < 10. else float('inf')))
         print('-' * 89)
 
 except KeyboardInterrupt:

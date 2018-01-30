@@ -94,7 +94,10 @@ class RNNModel(nn.Module):
                 Variable(weight.new(1, bsz, chosen_size(l)).zero_()))
                 for l in range(self.nlayers)]
 
-    def evaluate(self, corpus, data_source, args, criterion):
+    def evaluate(self, corpus, data_source, args, criterion, iwae=False, num_importance_samples=None):
+        """
+        IWAE metrics are disabled for this model
+        """
         # Turn on evaluation mode which disables dropout.
         self.eval()
         total_loss = 0

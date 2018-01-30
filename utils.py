@@ -28,3 +28,12 @@ def print_in_epoch_summary(epoch, batch_idx, batch_size, dataset_size, loss, NLL
         NLL,
         kl_string))
     sys.stdout.flush()
+
+
+def log_sum_exp(arr, dim=0):
+    """Apply log-sum-exp to get IWAE loss. It's assumed that the samples vary along the `dim` axis"""
+    if arr.is_tensor():
+        A = arr.max(dim)[0]
+    else:
+        A = Variable(arr.max(dim)[0].data, requires_grad=False)
+    return A + (arr - A).exp().sum(dim).log()

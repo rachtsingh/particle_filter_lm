@@ -4,9 +4,10 @@ This is a reimplementation of Bowman et. al.'s Generating Sentences from a Conti
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
+import math
 import pdb  # noqa: F401
 
-from utils import print_in_epoch_summary
+from utils import print_in_epoch_summary, log_sum_exp
 from locked_dropout import LockedDropout  # noqa: F401
 from embed_regularize import embedded_dropout  # noqa: F401
 
@@ -83,6 +84,8 @@ class PFLM(nn.Module):
         if self.aprior:
             prior_means = []
             p_h, p_c = self.init_hidden(batch_sz, self.z_dim) # initially zero
+            p_h = p_h.squeeze()
+            p_c = p_c.squeeze()
         h, c = self.init_hidden(batch_sz, self.z_dim)
         h = h.squeeze(0)
         c = c.squeeze(0)
@@ -127,32 +130,52 @@ class PFLM(nn.Module):
         else:
             return logits, means, logvars
 
-    def elbo(self, logits, targets, criterion, means, logvars, args, prior_means=None):
+    def elbo(self, logits, targets, criterion, means, logvars, args, iwae=False, num_importance_samples=3, prior_means=None):
         seq_len, batch_size, ntokens = logits.size()
         NLL = seq_len * batch_size * criterion(logits.view(-1, ntokens), targets.view(-1))
+        NLL = torch.stack(torch.chunk(NLL.view(seq_len, batch_size).sum(0), num_importance_samples, 0))
+        pdb.set_trace()
         KL = 0
         if prior_means is None:
             for mean, logvar in zip(means, logvars):
-                KL += -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
+                KL += -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp(), -1)
         else:
             for mean, prior_mean, logvar in zip(means, prior_means, logvars):
-                KL += -0.5 * torch.sum(1 + logvar - (mean - prior_mean).pow(2) - logvar.exp())
-        return (NLL + args.anneal * KL), NLL, KL, seq_len * batch_size
+                # KL += -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
+                KL += -0.5 * torch.sum(1 + logvar - (mean - prior_mean).pow(2) - logvar.exp(), -1)
+        KL = torch.stack(torch.chunk(KL, num_importance_samples, 0))
+        if iwae:
+            assert args.anneal == 1, "can't mix annealing and IWAE"
+            # TODO figure out how to calculate the number of tokens here
+            loss = (-(log_sum_exp(-(NLL + KL), dim=0)) + np.log(num_samples)).sum()
+            return loss, NLL.sum(), KL.sum(), seq_len * batch_size
+        else:
+            return (NLL.sum() + args.anneal * KL.sum()), NLL.sum(), KL.sum(), seq_len * batch_size
 
-    def evaluate(self, corpus, data_source, args, criterion):
+    def evaluate(self, corpus, data_source, args, criterion, iwae=False, num_importance_samples=3):
         self.eval()
+        old_anneal = args.anneal  # save to replace after evaluation
         args.anneal = 1.
         total_loss = 0
         total_nll = 0
         total_tokens = 0
         for batch in data_source:
             data, targets = batch.text, batch.target
-            logits, means, logvars = self.forward(data, targets, args)
-            loss, NLL, KL, tokens = self.elbo(logits, data, criterion, means, logvars, args)
+            if iwae:
+                data = data.repeat(1, num_importance_samples)
+                targets = targets.repeat(1, num_importance_samples)
+            if self.aprior:
+                logits, means, logvars, prior_means = self.forward(data, targets, args)
+                loss, NLL, KL, tokens = self.elbo(logits, data, criterion, means, logvars, args, iwae, num_importance_samples, prior_means=prior_means)
+            else:
+                logits, means, logvars = self.forward(data, targets, args)
+                loss, NLL, KL, tokens = self.elbo(logits, data, criterion, means, logvars, args, iwae, num_importance_samples)
             total_loss += loss.detach().data
             total_nll += NLL.detach().data
             total_tokens += tokens
+        print("args.anneal: {:.4f}".format(old_anneal))
         print("eval: {:.2f} NLL".format(total_nll[0] / total_loss[0]))
+        args.anneal = old_anneal
         return total_loss[0] / total_tokens, total_nll[0] / total_tokens
 
     def train_epoch(self, corpus, train_data, criterion, optimizer, epoch, args):
@@ -163,7 +186,7 @@ class PFLM(nn.Module):
         batch_idx = 0
         for batch in train_data:
             if epoch > args.kl_anneal_delay:
-                args.anneal += args.kl_anneal_rate
+                args.anneal = min(args.anneal + args.kl_anneal_rate, 1.)
             optimizer.zero_grad()
             data, targets = batch.text, batch.target
             if self.aprior:
