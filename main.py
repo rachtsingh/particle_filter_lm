@@ -5,6 +5,7 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
+import pdb
 
 from torchtext.datasets import PennTreeBank
 from data import PTBSeq2Seq
@@ -166,13 +167,10 @@ try:
             for param_group in optimizer.param_groups:
                 param_group['lr'] = args.lr
 
-        val_loss, val_elbo, val_nll = model.evaluate(corpus, val_data, args, criterion, not args.no_iwae, args.num_importance_samples)
-        pdb.set_trace()
         train_loss = model.train_epoch(corpus, train_data, criterion, optimizer, epoch, args)
 
         # let's ignore ASGD for now
         val_loss, val_elbo, val_nll = model.evaluate(corpus, val_data, args, criterion, not args.no_iwae, args.num_importance_samples)
-        pdb.set_trace()
         print('-' * 89)
         print('| end of epoch {:3d} | time: {:5.2f}s | valid IWAE {:5.2f} | valid ELBO {:5.2f} | valid NLL {:5.2f} | '
               'valid ppl {:8.2f}'.format(epoch, (time.time() - epoch_start_time), val_loss, val_elbo, val_nll, 

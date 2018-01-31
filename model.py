@@ -21,7 +21,7 @@ class PFLM(nn.Module):
     def __init__(self, ntoken, ninp, nhid, z_dim, nlayers, dropout=0.5, dropouth=0.5,
                  dropouti=0.5, dropoute=0.1, wdrop=0., autoregressive_prior=False):
         super(PFLM, self).__init__()
-        
+
         # encoder side
         self.inp_embedding = nn.Embedding(ntoken, ninp)
         self.encoder = torch.nn.LSTM(ninp, nhid, 1, dropout=0, bidirectional=True)
@@ -35,7 +35,7 @@ class PFLM(nn.Module):
             self.ar_prior_mean = nn.LSTMCell(z_dim, z_dim)
 
         # decoder side
-        self.z_decoder = nn.LSTMCell(2 * nhid, z_dim) # we're going to feed the output from the last step in at every input
+        self.z_decoder = nn.LSTMCell(2 * nhid, z_dim)  # we're going to feed the output from the last step in at every input
         self.dec_embedding = nn.Embedding(ntoken, ninp)
         self.dropout = nn.Dropout(dropout)
         self.decoder = torch.nn.LSTM(z_dim + ninp, nhid, 1, dropout=0)
@@ -182,7 +182,7 @@ class PFLM(nn.Module):
         print("args.anneal: {:.4f}".format(old_anneal))
         print("eval: {:.2f} NLL".format(total_nll[0] / total_loss[0]))
         args.anneal = old_anneal
-        return total_loss[0] / total_tokens, total_elbo_loss / total_tokens, total_nll[0] / total_tokens
+        return total_loss[0] / total_tokens, total_elbo_loss[0] / total_tokens, total_nll[0] / total_tokens
 
     def train_epoch(self, corpus, train_data, criterion, optimizer, epoch, args):
         self.train()
