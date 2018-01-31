@@ -86,6 +86,8 @@ class PFLM(nn.Module):
             p_h, p_c = self.init_hidden(batch_sz, self.z_dim) # initially zero
             p_h = p_h.squeeze()
             p_c = p_c.squeeze()
+        else:
+            prior_means = None
         h, c = self.init_hidden(batch_sz, self.z_dim)
         h = h.squeeze(0)
         c = c.squeeze(0)
@@ -124,17 +126,21 @@ class PFLM(nn.Module):
         seq_len, batches, nhid = raw_out.size()
         resized = raw_out.view(seq_len * batches, nhid)
         logits = self.out_embedding(resized).view(seq_len, batches, self.ntoken)
-
-        if self.aprior:
-            return logits, means, logvars, prior_means
-        else:
-            return logits, means, logvars
+        
+        return logits, means, logvars, prior_means
 
     def elbo(self, logits, targets, criterion, means, logvars, args, iwae=False, num_importance_samples=3, prior_means=None):
+        """
+        If iwae == False, then this returns (elbo, elbo, ...), otherwise it returns (iwae, elbo, ...)
+        """
         seq_len, batch_size, ntokens = logits.size()
-        NLL = seq_len * batch_size * criterion(logits.view(-1, ntokens), targets.view(-1))
-        NLL = torch.stack(torch.chunk(NLL.view(seq_len, batch_size).sum(0), num_importance_samples, 0))
-        pdb.set_trace()
+
+        # compute NLL
+        NLL = criterion(logits.view(-1, ntokens), targets.view(-1))  # takes the sum, not the mean
+        if iwae:
+            NLL = torch.stack(torch.chunk(NLL.view(seq_len, batch_size).sum(0), num_importance_samples, 0))
+        
+        # compute KL
         KL = 0
         if prior_means is None:
             for mean, logvar in zip(means, logvars):
@@ -143,20 +149,23 @@ class PFLM(nn.Module):
             for mean, prior_mean, logvar in zip(means, prior_means, logvars):
                 # KL += -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
                 KL += -0.5 * torch.sum(1 + logvar - (mean - prior_mean).pow(2) - logvar.exp(), -1)
-        KL = torch.stack(torch.chunk(KL, num_importance_samples, 0))
+        
         if iwae:
+            KL = torch.stack(torch.chunk(KL, num_importance_samples, 0))
             assert args.anneal == 1, "can't mix annealing and IWAE"
-            # TODO figure out how to calculate the number of tokens here
-            loss = (-(log_sum_exp(-(NLL + KL), dim=0)) + np.log(num_samples)).sum()
-            return loss, NLL.sum(), KL.sum(), seq_len * batch_size
+            iwae_loss = (-(log_sum_exp(-(NLL + KL), dim=0)) + math.log(num_importance_samples)).sum()
+            elbo_loss = (NLL + KL).mean(0).sum()
+            return iwae_loss, elbo_loss, NLL.mean(0).sum(), KL.mean(0).sum(), ((seq_len * batch_size) / num_importance_samples)
         else:
-            return (NLL.sum() + args.anneal * KL.sum()), NLL.sum(), KL.sum(), seq_len * batch_size
+            elbo_loss = NLL.sum() + args.anneal * KL.sum()
+            return elbo_loss, elbo_loss, NLL.sum(), KL.sum(), seq_len * batch_size
 
     def evaluate(self, corpus, data_source, args, criterion, iwae=False, num_importance_samples=3):
         self.eval()
         old_anneal = args.anneal  # save to replace after evaluation
         args.anneal = 1.
         total_loss = 0
+        total_elbo_loss = 0
         total_nll = 0
         total_tokens = 0
         for batch in data_source:
@@ -164,19 +173,16 @@ class PFLM(nn.Module):
             if iwae:
                 data = data.repeat(1, num_importance_samples)
                 targets = targets.repeat(1, num_importance_samples)
-            if self.aprior:
-                logits, means, logvars, prior_means = self.forward(data, targets, args)
-                loss, NLL, KL, tokens = self.elbo(logits, data, criterion, means, logvars, args, iwae, num_importance_samples, prior_means=prior_means)
-            else:
-                logits, means, logvars = self.forward(data, targets, args)
-                loss, NLL, KL, tokens = self.elbo(logits, data, criterion, means, logvars, args, iwae, num_importance_samples)
-            total_loss += loss.detach().data
+            logits, means, logvars, prior_means = self.forward(data, targets, args)
+            iwae_loss, elbo_loss, NLL, KL, tokens = self.elbo(logits, data, criterion, means, logvars, args, iwae, num_importance_samples, prior_means=prior_means)
+            total_loss += iwae_loss.detach().data
+            total_elbo_loss += elbo_loss.detach().data
             total_nll += NLL.detach().data
             total_tokens += tokens
         print("args.anneal: {:.4f}".format(old_anneal))
         print("eval: {:.2f} NLL".format(total_nll[0] / total_loss[0]))
         args.anneal = old_anneal
-        return total_loss[0] / total_tokens, total_nll[0] / total_tokens
+        return total_loss[0] / total_tokens, total_elbo_loss / total_tokens, total_nll[0] / total_tokens
 
     def train_epoch(self, corpus, train_data, criterion, optimizer, epoch, args):
         self.train()
@@ -189,12 +195,8 @@ class PFLM(nn.Module):
                 args.anneal = min(args.anneal + args.kl_anneal_rate, 1.)
             optimizer.zero_grad()
             data, targets = batch.text, batch.target
-            if self.aprior:
-                logits, means, logvars, prior_means = self.forward(data, targets, args)
-                elbo, NLL, KL, tokens = self.elbo(logits, data, criterion, means, logvars, args, prior_means=prior_means)
-            else:
-                logits, means, logvars = self.forward(data, targets, args)
-                elbo, NLL, KL, tokens = self.elbo(logits, data, criterion, means, logvars, args)
+            logits, means, logvars, prior_means = self.forward(data, targets, args)
+            _, elbo, NLL, KL, tokens = self.elbo(logits, data, criterion, means, logvars, args, prior_means=prior_means)
             loss = elbo/tokens
             loss.backward()
             torch.nn.utils.clip_grad_norm(self.parameters(), args.clip)
