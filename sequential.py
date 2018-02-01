@@ -12,7 +12,7 @@ from locked_dropout import LockedDropout  # noqa: F401
 from embed_regularize import embedded_dropout  # noqa: F401
 
 
-class PFLM(nn.Module):
+class SequentialLM(nn.Module):
     """
     Here, encoder refers to the encoding RNN, unlike in baseline.py
     We're using a single layer RNN on the encoder side, but the decoder is essentially two RNNs
@@ -20,7 +20,7 @@ class PFLM(nn.Module):
 
     def __init__(self, ntoken, ninp, nhid, z_dim, nlayers, dropout=0.5, dropouth=0.5,
                  dropouti=0.5, dropoute=0.1, wdrop=0., autoregressive_prior=False):
-        super(PFLM, self).__init__()
+        super(SequentialLM, self).__init__()
 
         # encoder side
         self.inp_embedding = nn.Embedding(ntoken, ninp)
@@ -74,7 +74,7 @@ class PFLM(nn.Module):
         """
         seq_len, batch_sz = input.size()
         emb = self.inp_embedding(input)
-        hidden = self.init_hidden(batch_sz, self.nhid, 2) # bidirectional
+        hidden = self.init_hidden(batch_sz, self.nhid, 2)  # bidirectional
         hidden_states, (h, c) = self.encoder(emb, hidden)
 
         # run the z-decoder at this point
@@ -83,7 +83,7 @@ class PFLM(nn.Module):
         logvars = []
         if self.aprior:
             prior_means = []
-            p_h, p_c = self.init_hidden(batch_sz, self.z_dim) # initially zero
+            p_h, p_c = self.init_hidden(batch_sz, self.z_dim)  # initially zero
             p_h = p_h.squeeze()
             p_c = p_c.squeeze()
         else:
@@ -98,14 +98,14 @@ class PFLM(nn.Module):
             # add the offset prior mean before mutation
             if self.aprior:
                 prior_means.append(p_h)
-            
+
             # build the next z sample
             std = (logvar/2).exp()
             eps = Variable(torch.randn(mean.size()))
             if torch.cuda.is_available():
                 eps = eps.cuda()
             h = (eps * std) + mean
-           
+
             if self.aprior:
                 # build the next mean prediction, feeding in this z
                 p_h, p_c = self.ar_prior_mean(h, (p_h, p_c))
@@ -126,7 +126,7 @@ class PFLM(nn.Module):
         seq_len, batches, nhid = raw_out.size()
         resized = raw_out.view(seq_len * batches, nhid)
         logits = self.out_embedding(resized).view(seq_len, batches, self.ntoken)
-        
+
         return logits, means, logvars, prior_means
 
     def elbo(self, logits, targets, criterion, means, logvars, args, iwae=False, num_importance_samples=3, prior_means=None):
@@ -139,7 +139,7 @@ class PFLM(nn.Module):
         NLL = criterion(logits.view(-1, ntokens), targets.view(-1))  # takes the sum, not the mean
         if iwae:
             NLL = torch.stack(torch.chunk(NLL.view(seq_len, batch_size).sum(0), num_importance_samples, 0))
-        
+
         # compute KL
         KL = 0
         if prior_means is None:
@@ -149,7 +149,7 @@ class PFLM(nn.Module):
             for mean, prior_mean, logvar in zip(means, prior_means, logvars):
                 # KL += -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
                 KL += -0.5 * torch.sum(1 + logvar - (mean - prior_mean).pow(2) - logvar.exp(), -1)
-        
+
         if iwae:
             KL = torch.stack(torch.chunk(KL, num_importance_samples, 0))
             assert args.anneal == 1, "can't mix annealing and IWAE"
@@ -174,7 +174,8 @@ class PFLM(nn.Module):
                 data = data.repeat(1, num_importance_samples)
                 targets = targets.repeat(1, num_importance_samples)
             logits, means, logvars, prior_means = self.forward(data, targets, args)
-            iwae_loss, elbo_loss, NLL, KL, tokens = self.elbo(logits, data, criterion, means, logvars, args, iwae, num_importance_samples, prior_means=prior_means)
+            iwae_loss, elbo_loss, NLL, KL, tokens = self.elbo(logits, data, criterion, means, logvars, args, iwae,
+                                                              num_importance_samples, prior_means=prior_means)
             total_loss += iwae_loss.detach().data
             total_elbo_loss += elbo_loss.detach().data
             total_nll += NLL.detach().data

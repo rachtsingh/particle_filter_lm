@@ -5,7 +5,7 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
-import pdb
+import pdb  # noqa: F401
 
 from torchtext.datasets import PennTreeBank
 from data import PTBSeq2Seq
@@ -13,13 +13,14 @@ from utils import get_sha
 
 import baseline
 import rvae
-import model
+import sequential
+import pfilter
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
 parser.add_argument('--dataset', type=str, default='ptb',
                     help='one of [ptb (default), wt2]')
 parser.add_argument('--model', type=str, default='rvae',
-                    help='type of model to use (baseline, rvae, filter)')
+                    help='type of model to use (baseline, rvae, sequential, filter)')
 parser.add_argument('--emsize', type=int, default=512,
                     help='size of word embeddings')
 parser.add_argument('--nhid', type=int, default=1024,
@@ -103,37 +104,37 @@ else:
 # Load data and build the model
 ###############################################################################
 
+if args.dataset == 'ptb' and args.model == 'baseline':
+    train_data, val_data, test_data = PennTreeBank.iters(batch_size=args.batch_size,
+                                                         bptt_len=args.bptt,
+                                                         device=device)
+    corpus = train_data.dataset.fields['text'].vocab
+elif args.dataset == 'ptb':
+    train_data, val_data, test_data = PTBSeq2Seq.iters(batch_size=args.batch_size, device=device)
+    corpus = train_data.dataset.fields['target'].vocab
+ntokens = len(corpus)
+
 # BASELINE RNNLM
 if args.model == 'baseline':
-    if args.dataset == 'ptb':
-        train_data, val_data, test_data = PennTreeBank.iters(batch_size=args.batch_size,
-                                                             bptt_len=args.bptt,
-                                                             device=device)
-        corpus = train_data.dataset.fields['text'].vocab
-        ntokens = len(corpus)
-
-        model = baseline.RNNModel(ntokens, args.emsize, args.nhid, args.nlayers,
-                                  args.dropout, args.dropouth, args.dropouti,
-                                  args.dropoute, args.wdrop, not args.not_tied)
+    model = baseline.RNNModel(ntokens, args.emsize, args.nhid, args.nlayers,
+                              args.dropout, args.dropouth, args.dropouti,
+                              args.dropoute, args.wdrop, not args.not_tied)
 
 # BASELINE RVAE
-if args.model == 'rvae':
-    if args.dataset == 'ptb':
-        train_data, val_data, test_data = PTBSeq2Seq.iters(batch_size=args.batch_size, device=device)
-        corpus = train_data.dataset.fields['target'].vocab  # includes BOS
-        ntokens = len(corpus)
-        model = rvae.RVAE(ntokens, args.emsize, args.nhid, args.z_dim, 1, args.dropout, args.dropouth,
-                          args.dropouti, args.dropoute, args.wdrop, not args.not_tied)
+elif args.model == 'rvae':
+    model = rvae.RVAE(ntokens, args.emsize, args.nhid, args.z_dim, 1, args.dropout, args.dropouth,
+                      args.dropouti, args.dropoute, args.wdrop, not args.not_tied)
 
-# OUR MODEL (PARTICLE FILTER LM)
-if args.model == 'filter':
-    if args.dataset == 'ptb':
-        train_data, val_data, test_data = PTBSeq2Seq.iters(batch_size=args.batch_size, device=device)
-        corpus = train_data.dataset.fields['target'].vocab
-        ntokens = len(corpus)
+# OUR 1st MODEL (A SEQUENTIALLY GENERATED VAE)
+elif args.model == 'sequential':
+    model = sequential.SequentialLM(ntokens, args.emsize, args.nhid, args.z_dim, 1, args.dropout,
+                                    args.dropouth, args.dropouti, args.dropoute, args.wdrop,
+                                    not args.no_autoregressive_prior)
 
-        model = model.PFLM(ntokens, args.emsize, args.nhid, args.z_dim, 1, args.dropout, args.dropouth,
-                           args.dropouti, args.dropoute, args.wdrop, not args.no_autoregressive_prior)
+elif args.model == 'filter':
+    model = pfilter.PFLM(ntokens, args.emsize, args.nhid, args.z_dim, 1, args.dropout,
+                         args.dropouth, args.dropouti, args.dropoute, args.wdrop,
+                         not args.no_autoregressive_prior)
 
 if args.cuda and torch.cuda.is_available():
     model.cuda()
@@ -163,7 +164,7 @@ try:
             args.anneal = 0.0001
 
         if epoch in (15, 25, 35, 45) and args.model == 'rvae':
-            args.lr = 0.7 * args.lr
+            args.lr = 0.9 * args.lr
             for param_group in optimizer.param_groups:
                 param_group['lr'] = args.lr
 
@@ -173,7 +174,7 @@ try:
         val_loss, val_elbo, val_nll = model.evaluate(corpus, val_data, args, criterion, not args.no_iwae, args.num_importance_samples)
         print('-' * 89)
         print('| end of epoch {:3d} | time: {:5.2f}s | valid IWAE {:5.2f} | valid ELBO {:5.2f} | valid NLL {:5.2f} | '
-              'valid ppl {:8.2f}'.format(epoch, (time.time() - epoch_start_time), val_loss, val_elbo, val_nll, 
+              'valid ppl {:8.2f}'.format(epoch, (time.time() - epoch_start_time), val_loss, val_elbo, val_nll,
                                          math.exp(val_loss) if val_loss < 10. else float('inf')))
         print('-' * 89)
 
