@@ -25,14 +25,19 @@ class Seq2SeqLMDataset(data.Dataset):
         return super(Seq2SeqLMDataset, cls).splits(root=root, text_field=text_field, **kwargs)
 
     @classmethod
-    def iters(cls, batch_size=32, device=0, root='./data', vectors=None, **kwargs):
+    def iters(cls, batch_sizes=None, batch_size=None, device=0, root='./data', vectors=None, **kwargs):
         """
         PTB, but with sorted batches
         """
         TEXT = data.Field()
         train, val, test = cls.splits(TEXT, root=root, **kwargs)
         TEXT.build_vocab(train, vectors=vectors)
-        return data.BucketIterator.splits((train, val, test), batch_size=batch_size, device=device, repeat=False)
+        if batch_sizes is not None:
+            return data.BucketIterator.splits((train, val, test), batch_sizes=batch_sizes, device=device, repeat=False)
+        elif batch_size is not None:
+            return data.BucketIterator.splits((train, val, test), batch_size=batch_size, device=device, repeat=False)
+        else:
+            raise ValueError("You must include a batch size of some type")
 
 
 class PTBSeq2Seq(Seq2SeqLMDataset, PennTreeBank):

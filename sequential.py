@@ -191,6 +191,7 @@ class SequentialLM(nn.Module):
         total_loss = 0
         total_tokens = 0
         batch_idx = 0
+
         for batch in train_data:
             if epoch > args.kl_anneal_delay:
                 args.anneal = min(args.anneal + args.kl_anneal_rate, 1.)

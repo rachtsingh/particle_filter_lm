@@ -110,7 +110,12 @@ if args.dataset == 'ptb' and args.model == 'baseline':
                                                          device=device)
     corpus = train_data.dataset.fields['text'].vocab
 elif args.dataset == 'ptb':
-    train_data, val_data, test_data = PTBSeq2Seq.iters(batch_size=args.batch_size, device=device)
+    if args.no_iwae:
+        train_data, val_data, test_data = PTBSeq2Seq.iters(batch_size=args.batch_size, device=device)
+    else:
+        # in IWAE evaluation, we want training to stay fast while eval has smaller batches ( * num_importance_samples)
+        small_batch = int(2 * args.batch_size / args.num_importance_samples)
+        train_data, val_data, test_data = PTBSeq2Seq.iters(batch_sizes=(args.batch_size, small_batch, small_batch), device=device)
     corpus = train_data.dataset.fields['target'].vocab
 ntokens = len(corpus)
 

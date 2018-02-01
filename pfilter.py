@@ -95,6 +95,7 @@ class SequentialLM(nn.Module):
             p_c = p_c.squeeze()
         else:
             prior_means = None
+
         h, c = self.init_hidden(batch_sz, self.z_dim)
         h = h.squeeze(0)
         c = c.squeeze(0)
