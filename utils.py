@@ -1,6 +1,7 @@
 from torch.autograd import Variable
 import sys
 import subprocess
+import pdb  # noqa: F401
 
 
 def get_sha():
@@ -33,7 +34,7 @@ def print_in_epoch_summary(epoch, batch_idx, batch_size, dataset_size, loss, NLL
 def log_sum_exp(arr, dim=0):
     """Apply log-sum-exp to get IWAE loss. It's assumed that the samples vary along the `dim` axis"""
     if not isinstance(arr, Variable):
-        A = arr.max(dim)[0]
+        A = arr.max(dim)[0].unsqueeze(dim)
     else:
-        A = Variable(arr.max(dim)[0].data, requires_grad=False)
-    return A + (arr - A).exp().sum(dim).log()
+        A = Variable(arr.max(dim)[0].data, requires_grad=False).unsqueeze(dim)
+    return (A + (arr - A).exp().sum(dim, keepdim=True).log()).squeeze()

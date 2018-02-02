@@ -1,11 +1,12 @@
+# this script is from https://github.com/salesforce/awd-lstm-lm - thanks!
 echo "=== Acquiring datasets ==="
 echo "---"
 mkdir -p data
 cd data
 
 echo "- Downloading Penn Treebank (PTB)"
-mkdir -p penn
-cd penn
+mkdir -p ptb
+cd ptb
 wget --quiet --continue http://www.fit.vutbr.cz/~imikolov/rnnlm/simple-examples.tgz
 tar -xzf simple-examples.tgz
 mv simple-examples/data/ptb.train.txt train.txt

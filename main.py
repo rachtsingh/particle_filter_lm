@@ -35,9 +35,9 @@ parser.add_argument('--lr', type=float, default=1.0,
                     help='initial learning rate')
 parser.add_argument('--clip', type=float, default=3.0,
                     help='gradient clipping')
-parser.add_argument('--kl-anneal-delay', type=float, default=10,
+parser.add_argument('--kl-anneal-delay', type=float, default=4,
                     help='number of epochs to delay increasing the KL divergence contribution')
-parser.add_argument('--kl-anneal-rate', type=float, default=0.0002,
+parser.add_argument('--kl-anneal-rate', type=float, default=0.0001,
                     help='amount to increase the KL divergence amount *per batch*')
 parser.add_argument('--keep-rate', type=float, default=0.5,
                     help='rate at which to keep words during decoders')
@@ -63,7 +63,7 @@ parser.add_argument('--max-kl-penalty', type=float, default=0.,
                     help='maximum KL penalty to allow (essentially gradient clips the KL)')
 parser.add_argument('--no-iwae', action='store_true',
                     help='whether to disable reporting of the IWAE metric instead of KL')
-parser.add_argument('--num-importance-samples', type=int, default=3,
+parser.add_argument('--num-importance-samples', type=int, default=5,
                     help='number of samples to take for IWAE')
 parser.add_argument('--seed', type=int, default=1111,
                     help='random seed')
@@ -114,7 +114,7 @@ elif args.dataset == 'ptb':
         train_data, val_data, test_data = PTBSeq2Seq.iters(batch_size=args.batch_size, device=device)
     else:
         # in IWAE evaluation, we want training to stay fast while eval has smaller batches ( * num_importance_samples)
-        small_batch = int(2 * args.batch_size / args.num_importance_samples)
+        small_batch = 8 * (int(2 * args.batch_size / args.num_importance_samples) // 8)
         train_data, val_data, test_data = PTBSeq2Seq.iters(batch_sizes=(args.batch_size, small_batch, small_batch), device=device)
     corpus = train_data.dataset.fields['target'].vocab
 ntokens = len(corpus)
@@ -173,7 +173,7 @@ try:
             for param_group in optimizer.param_groups:
                 param_group['lr'] = args.lr
 
-        train_loss = model.train_epoch(corpus, train_data, criterion, optimizer, epoch, args)
+        train_loss = model.train_epoch(corpus, train_data, criterion, optimizer, epoch, args, args.num_importance_samples)
 
         # let's ignore ASGD for now
         val_loss, val_elbo, val_nll = model.evaluate(corpus, val_data, args, criterion, not args.no_iwae, args.num_importance_samples)
