@@ -136,6 +136,7 @@ class PFLM(nn.Module):
             nlls[i] = NLL.data
 
             # compute the weight using `reweight` on page (4)
+            # TODO: include constants in this, since you're using it in the LSE
             weights[i] = (-NLL - 0.5 * ((eps - p_h).pow(2).sum(1)) + 0.5 * (eps.pow(2).sum(1)))
 
             # sample ancestors, and reindex everything
@@ -175,8 +176,8 @@ class PFLM(nn.Module):
             total_loss += elbo.detach().data
             total_nll += NLL
             total_tokens += tokens
-        print("args.anneal: {:.4f}".format(old_anneal))
-        print("eval: {:.2f} NLL".format(total_nll[0] / total_loss[0]))
+        print("no annealing yet")
+        print("eval: {:.2f} NLL".format(total_nll / total_loss[0]))
         args.anneal = old_anneal
 
         # duplicate total_loss because we don't have a separate ELBO loss here, though we can grab it
