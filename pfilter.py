@@ -7,6 +7,7 @@ import torch.nn as nn
 from torch.autograd import Variable
 from torch.nn.functional import softmax
 import math
+from tqdm import tqdm
 import pdb  # noqa: F401
 
 from utils import print_in_epoch_summary, log_sum_exp
@@ -92,9 +93,13 @@ class PFLM(nn.Module):
         out_emb = self.dropout(self.dec_embedding(targets))
 
         # now, we'll replicate it for each particle - it's currently [seq_len x batch_sz x nhid]
+        hidden_states = Variable(torch.arange(batch_sz).view(1, batch_sz, 1).cuda().repeat(seq_len, 1, self.nhid * 2))
+        out_emb = Variable(torch.arange(batch_sz).view(1, batch_sz, 1).cuda().repeat(seq_len, 1, self.ninp))
         hidden_states = hidden_states.repeat(1, n_particles, 1)
         out_emb = out_emb.repeat(1, n_particles, 1)
         # now [seq_len x (n_particles x batch_sz) x nhid]
+
+        # out_emb, hidden_states should be viewed as (n_particles x batch_sz) - this means that's true for h as well
 
         # run the z-decoder at this point, evaluating the NLL at each step
         p_h, p_c = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)  # initially zero
@@ -103,11 +108,11 @@ class PFLM(nn.Module):
         d_h, d_c = self.init_hidden(batch_sz * n_particles, self.nhid, squeeze=True)
 
         # we maintain two Tensors, [seq_len x batch_sz]:
-        ancestors = input.data.new(seq_len + 1, batch_sz, n_particles).long()
-        init_ancestors = torch.arange(n_particles).view(-1, 1).repeat(1, batch_sz).transpose(0, 1).contiguous()
+        ancestors = input.data.new(seq_len + 1, n_particles, batch_sz).long().zero_()
+        init_ancestors = torch.arange(n_particles).view(-1, 1).repeat(1, batch_sz).long()
         if d_h.is_cuda:
             init_ancestors = init_ancestors.cuda()
-        ancestors[0] = init_ancestors.long()
+        ancestors[0] = init_ancestors
 
         weights = Variable(hidden_states.data.new(seq_len, batch_sz * n_particles))
         nlls = hidden_states.data.new(seq_len, batch_sz * n_particles)
@@ -145,16 +150,20 @@ class PFLM(nn.Module):
             offsets = n_particles * torch.arange(batch_sz).unsqueeze(1).repeat(1, n_particles).long()
             if ancestors[i].is_cuda:
                 offsets = offsets.cuda()
-            unrolled_idx = (ancestors[i] + offsets).view(-1)
+            unrolled_idx = (ancestors[i].t().contiguous()+offsets).view(-1)
             h = h[unrolled_idx]
             c = c[unrolled_idx]
+            p_h = p_h[unrolled_idx]
+            p_c = p_c[unrolled_idx]
+            d_h = d_h[unrolled_idx]
+            d_c = d_c[unrolled_idx]
 
             # build the next mean prediction, feeding in the correct ancestor
             p_h, p_c = self.ar_prior_mean(h, (p_h, p_c))
 
         # now, we calculate the final log-marginal estimator
         fivo_loss = -(log_sum_exp(weights.view(seq_len, n_particles, batch_sz), 1) - math.log(n_particles)).sum()
-        nll = nlls.view(seq_len, batch_sz, n_particles).mean(-1).sum()
+        nll = nlls.view(seq_len, n_particles, batch_sz).mean(-1).sum()
         return fivo_loss, nll, (seq_len * batch_sz)
 
     def evaluate(self, corpus, data_source, args, criterion, iwae=False, num_importance_samples=3):
@@ -184,7 +193,7 @@ class PFLM(nn.Module):
         total_tokens = 0
         batch_idx = 0
         print("batch_sz", args.batch_size)
-        for batch in train_data:
+        for batch in tqdm(train_data):
             if epoch > args.kl_anneal_delay:
                 args.anneal = min(args.anneal + args.kl_anneal_rate, 1.)
             optimizer.zero_grad()
