@@ -131,7 +131,7 @@ class PFLM(nn.Module):
             nlls[i] = NLL.data
 
             # compute the weight using `reweight` on page (4)
-            f_term = -0.5 * (LOG_2PI) - 0.5 * (eps - p_h).pow(2).sum(1)  # prior
+            f_term = -0.5 * (LOG_2PI) - 0.5 * (z - p_h).pow(2).sum(1)  # prior
             r_term = -0.5 * (LOG_2PI + 2 * logvar).sum(1) - 0.5 * eps.pow(2).sum(1)  # proposal
             weights[i] = -NLL + f_term - r_term
 
@@ -139,8 +139,6 @@ class PFLM(nn.Module):
             probs = softmax(weights[i].view(n_particles, batch_sz), dim=0).data
             probs += 0.01
             probs = probs / probs.sum(0, keepdim=True)
-            if (probs <= 0).any():
-                pdb.set_trace()
             ancestors[i] = torch.multinomial(probs.transpose(0, 1), n_particles, True)
 
             # now, reindex h + c, which is the most important thing
@@ -155,7 +153,7 @@ class PFLM(nn.Module):
             p_h, p_c = self.ar_prior_mean(h, (p_h, p_c))
 
         # now, we calculate the final log-marginal estimator
-        fivo_loss = -(log_sum_exp(weights.view(seq_len, batch_sz, n_particles), -1) - math.log(n_particles)).sum()
+        fivo_loss = -(log_sum_exp(weights.view(seq_len, n_particles, batch_sz), 1) - math.log(n_particles)).sum()
         nll = nlls.view(seq_len, batch_sz, n_particles).mean(-1).sum()
         return fivo_loss, nll, (seq_len * batch_sz)
 
@@ -185,6 +183,7 @@ class PFLM(nn.Module):
         total_loss = 0
         total_tokens = 0
         batch_idx = 0
+        print("batch_sz", args.batch_size)
         for batch in train_data:
             if epoch > args.kl_anneal_delay:
                 args.anneal = min(args.anneal + args.kl_anneal_rate, 1.)

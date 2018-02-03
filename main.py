@@ -71,7 +71,7 @@ parser.add_argument('--nonmono', type=int, default=5,
                     help='random seed')
 parser.add_argument('--cuda', action='store_false',
                     help='use CUDA')
-parser.add_argument('--log-interval', type=int, default=100, metavar='N',
+parser.add_argument('--log-interval', type=int, default=250, metavar='N',
                     help='report interval')
 randomhash = ''.join(str(time.time()).split('.'))
 parser.add_argument('--save', type=str,  default=randomhash+'.pt',
@@ -119,6 +119,7 @@ elif args.dataset == 'ptb':
             train_data, val_data, test_data = PTBSeq2Seq.iters(batch_sizes=(args.batch_size, small_batch, small_batch), device=device)
         elif args.model == 'filter':
             # in the filter, everything is IWAE-fied, essentially
+            args.batch_size = small_batch  # so that inside-epoch tracking is correct
             train_data, val_data, test_data = PTBSeq2Seq.iters(batch_size=small_batch, device=device)
         else:
             train_data, val_data, test_data = PTBSeq2Seq.iters(batch_size=args.batch_size, device=device)
