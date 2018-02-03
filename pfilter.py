@@ -93,17 +93,13 @@ class PFLM(nn.Module):
         out_emb = self.dropout(self.dec_embedding(targets))
 
         # now, we'll replicate it for each particle - it's currently [seq_len x batch_sz x nhid]
-        hidden_states = Variable(torch.arange(batch_sz).view(1, batch_sz, 1).cuda().repeat(seq_len, 1, self.nhid * 2))
-        out_emb = Variable(torch.arange(batch_sz).view(1, batch_sz, 1).cuda().repeat(seq_len, 1, self.ninp))
         hidden_states = hidden_states.repeat(1, n_particles, 1)
         out_emb = out_emb.repeat(1, n_particles, 1)
         # now [seq_len x (n_particles x batch_sz) x nhid]
-
         # out_emb, hidden_states should be viewed as (n_particles x batch_sz) - this means that's true for h as well
 
         # run the z-decoder at this point, evaluating the NLL at each step
         p_h, p_c = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)  # initially zero
-
         h, c = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)
         d_h, d_c = self.init_hidden(batch_sz * n_particles, self.nhid, squeeze=True)
 
@@ -179,7 +175,6 @@ class PFLM(nn.Module):
             total_loss += elbo.detach().data
             total_nll += NLL
             total_tokens += tokens
-        print("no annealing yet")
         print("eval: {:.2f} NLL".format(total_nll / total_loss[0]))
         args.anneal = old_anneal
 
@@ -192,7 +187,6 @@ class PFLM(nn.Module):
         total_loss = 0
         total_tokens = 0
         batch_idx = 0
-        print("batch_sz", args.batch_size)
         for batch in tqdm(train_data):
             if epoch > args.kl_anneal_delay:
                 args.anneal = min(args.anneal + args.kl_anneal_rate, 1.)
