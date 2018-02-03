@@ -114,8 +114,15 @@ elif args.dataset == 'ptb':
         train_data, val_data, test_data = PTBSeq2Seq.iters(batch_size=args.batch_size, device=device)
     else:
         # in IWAE evaluation, we want training to stay fast while eval has smaller batches ( * num_importance_samples)
-        small_batch = 8 * (int(2 * args.batch_size / args.num_importance_samples) // 8)
-        train_data, val_data, test_data = PTBSeq2Seq.iters(batch_sizes=(args.batch_size, small_batch, small_batch), device=device)
+        small_batch = 8 * (int(args.batch_size / args.num_importance_samples) // 8)
+        if args.model == 'sequential':
+            train_data, val_data, test_data = PTBSeq2Seq.iters(batch_sizes=(args.batch_size, small_batch, small_batch), device=device)
+        elif args.model == 'filter':
+            # in the filter, everything is IWAE-fied, essentially
+            train_data, val_data, test_data = PTBSeq2Seq.iters(batch_size=small_batch, device=device)
+        else:
+            train_data, val_data, test_data = PTBSeq2Seq.iters(batch_size=args.batch_size, device=device)
+
     corpus = train_data.dataset.fields['target'].vocab
 ntokens = len(corpus)
 

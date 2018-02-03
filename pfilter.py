@@ -13,6 +13,8 @@ from utils import print_in_epoch_summary, log_sum_exp
 from locked_dropout import LockedDropout  # noqa: F401
 from embed_regularize import embedded_dropout  # noqa: F401
 
+LOG_2PI = math.log(2 * math.pi)
+
 
 class PFLM(nn.Module):
     """
@@ -95,10 +97,6 @@ class PFLM(nn.Module):
         # now [seq_len x (n_particles x batch_sz) x nhid]
 
         # run the z-decoder at this point, evaluating the NLL at each step
-        z_samples = []
-        means = []
-        logvars = []
-        prior_means = []
         p_h, p_c = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)  # initially zero
 
         h, c = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)
@@ -118,9 +116,6 @@ class PFLM(nn.Module):
             h, c = self.z_decoder(hidden_states[i], (h, c))
             mean, logvar = self.mean(h), self.logvar(h)
 
-            # add the offset prior mean before mutation
-            prior_means.append(p_h)
-
             # build the next z sample
             std = (logvar/2).exp()
             eps = Variable(torch.randn(mean.size()))
@@ -136,11 +131,16 @@ class PFLM(nn.Module):
             nlls[i] = NLL.data
 
             # compute the weight using `reweight` on page (4)
-            # TODO: include constants in this, since you're using it in the LSE
-            weights[i] = (-NLL - 0.5 * ((eps - p_h).pow(2).sum(1)) + 0.5 * (eps.pow(2).sum(1)))
+            f_term = -0.5 * (LOG_2PI) - 0.5 * (eps - p_h).pow(2).sum(1)  # prior
+            r_term = -0.5 * (LOG_2PI + 2 * logvar).sum(1) - 0.5 * eps.pow(2).sum(1)  # proposal
+            weights[i] = -NLL + f_term - r_term
 
             # sample ancestors, and reindex everything
             probs = softmax(weights[i].view(n_particles, batch_sz), dim=0).data
+            probs += 0.01
+            probs = probs / probs.sum(0, keepdim=True)
+            if (probs <= 0).any():
+                pdb.set_trace()
             ancestors[i] = torch.multinomial(probs.transpose(0, 1), n_particles, True)
 
             # now, reindex h + c, which is the most important thing
@@ -151,12 +151,8 @@ class PFLM(nn.Module):
             h = h[unrolled_idx]
             c = c[unrolled_idx]
 
-            # build the next mean prediction, feeding in this z
+            # build the next mean prediction, feeding in the correct ancestor
             p_h, p_c = self.ar_prior_mean(h, (p_h, p_c))
-
-            z_samples.append(z)
-            means.append(mean)
-            logvars.append(logvar)
 
         # now, we calculate the final log-marginal estimator
         fivo_loss = -(log_sum_exp(weights.view(seq_len, batch_sz, n_particles), -1) - math.log(n_particles)).sum()
