@@ -38,6 +38,7 @@ class PFLM(nn.Module):
 
         if autoregressive_prior:
             self.ar_prior_mean = nn.LSTMCell(z_dim, z_dim)
+            # self.ar_prior_mean = nn.LSTMCell(z_dim + ninp, z_dim)
 
         # decoder side
         self.z_decoder = nn.LSTMCell(2 * nhid, z_dim)  # we're going to feed the output from the last step in at every input
@@ -115,10 +116,10 @@ class PFLM(nn.Module):
 
         for i in range(seq_len):
             h, c = self.z_decoder(hidden_states[i], (h, c))
-            mean, logvar = self.mean(h), self.logvar(h)
+            mean = self.mean(h)
 
             # build the next z sample
-            std = (logvar/2).exp()
+            std = 1
             eps = Variable(torch.randn(mean.size()))
             if torch.cuda.is_available():
                 eps = eps.cuda()
@@ -133,8 +134,8 @@ class PFLM(nn.Module):
 
             # compute the weight using `reweight` on page (4)
             f_term = -0.5 * (LOG_2PI) - 0.5 * (z - p_h).pow(2).sum(1)  # prior
-            r_term = -0.5 * (LOG_2PI + 2 * logvar).sum(1) - 0.5 * eps.pow(2).sum(1)  # proposal
-            weights[i] = -NLL + f_term - r_term
+            r_term = -0.5 * (LOG_2PI) - 0.5 * eps.pow(2).sum(1)  # proposal
+            weights[i] = -NLL + args.anneal * (f_term - r_term)
 
             # sample ancestors, and reindex everything
             probs = softmax(weights[i].view(n_particles, batch_sz), dim=0).data
@@ -155,11 +156,12 @@ class PFLM(nn.Module):
             d_c = d_c[unrolled_idx]
 
             # build the next mean prediction, feeding in the correct ancestor
+            # p_h, p_c = self.ar_prior_mean(torch.cat([h, out_emb[i]], 1), (p_h, p_c))
             p_h, p_c = self.ar_prior_mean(h, (p_h, p_c))
 
         # now, we calculate the final log-marginal estimator
         fivo_loss = -(log_sum_exp(weights.view(seq_len, n_particles, batch_sz), 1) - math.log(n_particles)).sum()
-        nll = nlls.view(seq_len, n_particles, batch_sz).mean(-1).sum()
+        nll = nlls.view(seq_len, n_particles, batch_sz).mean(1).sum()
         return fivo_loss, nll, (seq_len * batch_sz)
 
     def evaluate(self, corpus, data_source, args, criterion, iwae=False, num_importance_samples=3):
@@ -169,13 +171,13 @@ class PFLM(nn.Module):
         total_loss = 0
         total_nll = 0
         total_tokens = 0
-        for batch in data_source:
+        for batch in tqdm(data_source):
             data, targets = batch.text, batch.target
             elbo, NLL, tokens = self.forward(data, targets, args, num_importance_samples, criterion)
             total_loss += elbo.detach().data
             total_nll += NLL
             total_tokens += tokens
-        print("eval: {:.2f} NLL".format(total_nll / total_loss[0]))
+        print("eval: {:.3f} NLL | current anneal: {:.3f}".format(total_nll / total_loss[0], old_anneal))
         args.anneal = old_anneal
 
         # duplicate total_loss because we don't have a separate ELBO loss here, though we can grab it
@@ -187,6 +189,10 @@ class PFLM(nn.Module):
         total_loss = 0
         total_tokens = 0
         batch_idx = 0
+
+        # for pretty printing the loss in each chunk
+        last_chunk_loss = 0
+        last_chunk_tokens = 0
         for batch in tqdm(train_data):
             if epoch > args.kl_anneal_delay:
                 args.anneal = min(args.anneal + args.kl_anneal_rate, 1.)
@@ -203,8 +209,13 @@ class PFLM(nn.Module):
 
             # print if necessary
             if batch_idx % args.log_interval == 0 and batch_idx > 0:
+                pass
+                chunk_loss = total_loss.data[0] - last_chunk_loss
+                chunk_tokens = total_tokens - last_chunk_tokens
                 print_in_epoch_summary(epoch, batch_idx, args.batch_size, dataset_size,
-                                       loss.data[0], NLL / tokens, {},
+                                       loss.data[0], NLL / tokens, {'Chunk Loss': chunk_loss / chunk_tokens},
                                        tokens, "anneal={:.2f}".format(args.anneal))
+                last_chunk_loss = total_loss.data[0]
+                last_chunk_tokens = total_tokens
             batch_idx += 1  # because no cheap generator smh
         return total_loss[0] / total_tokens

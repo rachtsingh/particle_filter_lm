@@ -21,7 +21,7 @@ def print_in_epoch_summary(epoch, batch_idx, batch_size, dataset_size, loss, NLL
     """
     loss: ELBO/IWAE/other final loss, *divided by `tokens`*
     """
-    kl_string = '\t'.join(["KL({}): {:.3f}".format(key, val) for key, val in KLs.items()])
+    kl_string = '\t'.join(["{}: {:.3f}".format(key, val) for key, val in KLs.items()])
     print('Train Epoch: {} [{:<5}/{} ({:<2.0f}%)]\tLoss: {:.3f}\tNLL: {:.3f}\t{}'.format(
         epoch, (batch_idx + 1) * batch_size, dataset_size,
         100. * (batch_idx + 1) / (dataset_size / batch_size),

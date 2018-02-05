@@ -25,7 +25,7 @@ class RVAE(nn.Module):
         self.inp_embedding = nn.Embedding(ntoken, ninp)
         self.encoder = torch.nn.LSTM(ninp, nhid, 1, dropout=0)
         self.enc = nn.ModuleList([self.inp_embedding, self.encoder])
-       
+
         # latent
         self.mean = nn.Linear(nhid, z_dim)
         self.logvar = nn.Linear(nhid, z_dim)
@@ -41,7 +41,7 @@ class RVAE(nn.Module):
         self.out_embedding = nn.Linear(nhid, ntoken)
         self.latent_linear = nn.Linear(z_dim, nhid)
         self.dec = nn.ModuleList([self.dropout, self.dec_embedding, self.latent_linear, self.decoder, self.out_embedding])
-        
+
         self.init_weights()
 
         self.ninp = ninp
