@@ -193,29 +193,37 @@ class PFLM(nn.Module):
         # for pretty printing the loss in each chunk
         last_chunk_loss = 0
         last_chunk_tokens = 0
-        for batch in tqdm(train_data):
-            if epoch > args.kl_anneal_delay:
-                args.anneal = min(args.anneal + args.kl_anneal_rate, 1.)
-            optimizer.zero_grad()
-            data, targets = batch.text, batch.target
-            elbo, NLL, tokens = self.forward(data, targets, args, num_importance_samples, criterion)
-            loss = elbo/tokens
-            loss.backward()
-            torch.nn.utils.clip_grad_norm(self.parameters(), args.clip)
-            optimizer.step()
+        with torch.autograd.profiler.profile() as prof:
+            for batch in train_data:
+                if batch_idx > 10:
+                    print("trying to break")
+                    break
+                if epoch > args.kl_anneal_delay:
+                    args.anneal = min(args.anneal + args.kl_anneal_rate, 1.)
+                optimizer.zero_grad()
+                data, targets = batch.text, batch.target
+                elbo, NLL, tokens = self.forward(data, targets, args, num_importance_samples, criterion)
+                loss = elbo/tokens
+                loss.backward()
+                torch.nn.utils.clip_grad_norm(self.parameters(), args.clip)
+                optimizer.step()
 
-            total_loss += elbo.detach()
-            total_tokens += tokens
+                total_loss += elbo.detach()
+                total_tokens += tokens
 
-            # print if necessary
-            if batch_idx % args.log_interval == 0 and batch_idx > 0:
-                pass
-                chunk_loss = total_loss.data[0] - last_chunk_loss
-                chunk_tokens = total_tokens - last_chunk_tokens
-                print_in_epoch_summary(epoch, batch_idx, args.batch_size, dataset_size,
-                                       loss.data[0], NLL / tokens, {'Chunk Loss': chunk_loss / chunk_tokens},
-                                       tokens, "anneal={:.2f}".format(args.anneal))
-                last_chunk_loss = total_loss.data[0]
-                last_chunk_tokens = total_tokens
-            batch_idx += 1  # because no cheap generator smh
+                # print if necessary
+                if batch_idx % args.log_interval == 0 and batch_idx > 0:
+                    pass
+                    chunk_loss = total_loss.data[0] - last_chunk_loss
+                    chunk_tokens = total_tokens - last_chunk_tokens
+                    print_in_epoch_summary(epoch, batch_idx, args.batch_size, dataset_size,
+                                           loss.data[0], NLL / tokens, {'Chunk Loss': chunk_loss / chunk_tokens},
+                                           tokens, "anneal={:.2f}".format(args.anneal))
+                    last_chunk_loss = total_loss.data[0]
+                    last_chunk_tokens = total_tokens
+                batch_idx += 1  # because no cheap generator smh
+        # print(prof)
+        pdb.set_trace()
+        prof.export_chrome_trace("/datadrive/build/particle_filter_lm/chrome_trace_small.prof")
+        pdb.set_trace()
         return total_loss[0] / total_tokens
