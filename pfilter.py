@@ -7,6 +7,7 @@ import torch.nn as nn
 from torch.autograd import Variable
 from torch.nn.functional import softmax
 import math
+import sys
 from tqdm import tqdm
 import pdb  # noqa: F401
 
@@ -147,7 +148,8 @@ class PFLM(nn.Module):
             offsets = n_particles * torch.arange(batch_sz).unsqueeze(1).repeat(1, n_particles).long()
             if ancestors[i].is_cuda:
                 offsets = offsets.cuda()
-            unrolled_idx = (ancestors[i].t().contiguous()+offsets).view(-1)
+            # unrolled_idx = (ancestors[i].t().contiguous()+offsets).view(-1)
+            unrolled_idx = torch.arange(n_particles * batch_sz).long().cuda().view(-1)
             h = h[unrolled_idx]
             c = c[unrolled_idx]
             p_h = p_h[unrolled_idx]
@@ -186,17 +188,19 @@ class PFLM(nn.Module):
     def train_epoch(self, corpus, train_data, criterion, optimizer, epoch, args, num_importance_samples):
         self.train()
         dataset_size = len(train_data.data())  # this will be approximate
-        total_loss = 0
-        total_tokens = 0
-        batch_idx = 0
 
-        # for pretty printing the loss in each chunk
-        last_chunk_loss = 0
-        last_chunk_tokens = 0
-        with torch.autograd.profiler.profile() as prof:
+        def train_loop(profile=False):
+            total_loss = 0
+            total_tokens = 0
+            batch_idx = 0
+
+            # for pretty printing the loss in each chunk
+            last_chunk_loss = 0
+            last_chunk_tokens = 0
+
             for batch in train_data:
-                if batch_idx > 10:
-                    print("trying to break")
+                if profile and batch_idx > 10:
+                    print("breaking because profiling finished;")
                     break
                 if epoch > args.kl_anneal_delay:
                     args.anneal = min(args.anneal + args.kl_anneal_rate, 1.)
@@ -222,8 +226,13 @@ class PFLM(nn.Module):
                     last_chunk_loss = total_loss.data[0]
                     last_chunk_tokens = total_tokens
                 batch_idx += 1  # because no cheap generator smh
-        # print(prof)
-        pdb.set_trace()
-        prof.export_chrome_trace("/datadrive/build/particle_filter_lm/chrome_trace_small.prof")
-        pdb.set_trace()
-        return total_loss[0] / total_tokens
+            return total_loss, total_tokens
+
+        if args.prof is not None:
+            with torch.autograd.profiler.profile() as prof:
+                _, _ = train_loop(True)
+            prof.export_chrome_trace(args.prof)
+            sys.exit(0)
+        else:
+            total_loss, total_tokens = train_loop(True)
+            return total_loss[0] / total_tokens

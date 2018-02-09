@@ -82,6 +82,8 @@ parser.add_argument('--beta', type=float, default=1,
                     help='beta slowness regularization applied on RNN activiation (beta = 0 means no regularization)')
 parser.add_argument('--wdecay', type=float, default=1.2e-6,
                     help='weight decay applied to all weights')
+parser.add_argument('--prof', type=str, default=None,
+                    help='If specified, profile the first 10 batches and dump to <prof>')
 args = parser.parse_args()
 
 print("running {}".format(' '.join(sys.argv)))
