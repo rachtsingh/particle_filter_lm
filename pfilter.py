@@ -106,14 +106,17 @@ class PFLM(nn.Module):
         d_h, d_c = self.init_hidden(batch_sz * n_particles, self.nhid, squeeze=True)
 
         # we maintain two Tensors, [seq_len x batch_sz]:
-        ancestors = input.data.new(seq_len + 1, n_particles, batch_sz).long().zero_()
-        init_ancestors = torch.arange(n_particles).view(-1, 1).repeat(1, batch_sz).long()
-        if d_h.is_cuda:
-            init_ancestors = init_ancestors.cuda()
-        ancestors[0] = init_ancestors
+        # ancestors = input.data.new(seq_len + 1, n_particles, batch_sz).long().zero_()
+        # init_ancestors = torch.arange(n_particles).view(-1, 1).repeat(1, batch_sz).long()
+        # if d_h.is_cuda:
+        #     init_ancestors = init_ancestors.cuda()
+        # ancestors[0] = init_ancestors
 
-        weights = Variable(hidden_states.data.new(seq_len, batch_sz * n_particles))
         nlls = hidden_states.data.new(seq_len, batch_sz * n_particles)
+        loss = 0
+
+        accumulated_weights = -math.log(n_particles)  # will contain log w_{t - 1}
+        resamples = 0
 
         for i in range(seq_len):
             h, c = self.z_decoder(hidden_states[i], (h, c))
@@ -125,7 +128,6 @@ class PFLM(nn.Module):
             if torch.cuda.is_available():
                 eps = eps.cuda()
             z = (eps * std) + mean
-            h = z
 
             # now, compute the log-likelihood of the data given this mean, and the input out_emb
             d_h, d_c = self.decoder(torch.cat([z, out_emb[i]], 1), (d_h, d_c))
@@ -136,35 +138,48 @@ class PFLM(nn.Module):
             # compute the weight using `reweight` on page (4)
             f_term = -0.5 * (LOG_2PI) - 0.5 * (z - p_h).pow(2).sum(1)  # prior
             r_term = -0.5 * (LOG_2PI) - 0.5 * eps.pow(2).sum(1)  # proposal
-            weights[i] = -NLL + args.anneal * (f_term - r_term)
+            alpha = -NLL + args.anneal * (f_term - r_term)
+
+            wa = accumulated_weights + alpha.view(n_particles, batch_sz)
 
             # sample ancestors, and reindex everything
-            probs = softmax(weights[i].view(n_particles, batch_sz), dim=0).data
+            Z = log_sum_exp(wa, dim=0)  # line 7
+            loss += Z  # line 8
+            accumulated_weights = wa - Z  # line 9
+            probs = accumulated_weights.data.exp()
             probs += 0.01
             probs = probs / probs.sum(0, keepdim=True)
-            ancestors[i] = torch.multinomial(probs.transpose(0, 1), n_particles, True)
+            effective_sample_size = 1./probs.pow(2).sum(0)
 
-            # now, reindex h + c, which is the most important thing
-            offsets = n_particles * torch.arange(batch_sz).unsqueeze(1).repeat(1, n_particles).long()
-            if ancestors[i].is_cuda:
-                offsets = offsets.cuda()
-            # unrolled_idx = (ancestors[i].t().contiguous()+offsets).view(-1)
-            unrolled_idx = torch.arange(n_particles * batch_sz).long().cuda().view(-1)
-            h = h[unrolled_idx]
-            c = c[unrolled_idx]
-            p_h = p_h[unrolled_idx]
-            p_c = p_c[unrolled_idx]
-            d_h = d_h[unrolled_idx]
-            d_c = d_c[unrolled_idx]
+            # resample / RSAMP if 3 batch elements need resampling
+            if ((effective_sample_size / n_particles) < 0.6).sum() > 0:
+                resamples += 1
+                # pdb.set_trace()
+                ancestors = torch.multinomial(probs.transpose(0, 1), n_particles, True)
 
-            # build the next mean prediction, feeding in the correct ancestor
-            # p_h, p_c = self.ar_prior_mean(torch.cat([h, out_emb[i]], 1), (p_h, p_c))
-            p_h, p_c = self.ar_prior_mean(h, (p_h, p_c))
+                # now, reindex, which is the most important thing
+                offsets = n_particles * torch.arange(batch_sz).unsqueeze(1).repeat(1, n_particles).long()
+                if ancestors.is_cuda:
+                    offsets = offsets.cuda()
+                unrolled_idx = Variable(ancestors.t().contiguous()+offsets).view(-1)
+                h = torch.index_select(h, 0, unrolled_idx)
+                c = torch.index_select(c, 0, unrolled_idx)
+                p_h = torch.index_select(p_h, 0, unrolled_idx)
+                p_c = torch.index_select(p_c, 0, unrolled_idx)
+                d_h = torch.index_select(d_h, 0, unrolled_idx)
+                d_c = torch.index_select(d_c, 0, unrolled_idx)
+
+                # reset accumulated_weights
+                accumulated_weights = -math.log(n_particles)  # will contain log w_{t - 1}
+
+            if i != seq_len - 1:
+                # build the next mean prediction, feeding in the correct ancestor
+                # p_h, p_c = self.ar_prior_mean(torch.cat([h, out_emb[i]], 1), (p_h, p_c))
+                p_h, p_c = self.ar_prior_mean(h, (p_h, p_c))
 
         # now, we calculate the final log-marginal estimator
-        fivo_loss = -(log_sum_exp(weights.view(seq_len, n_particles, batch_sz), 1) - math.log(n_particles)).sum()
         nll = nlls.view(seq_len, n_particles, batch_sz).mean(1).sum()
-        return fivo_loss, nll, (seq_len * batch_sz)
+        return -loss.sum(), nll, (seq_len * batch_sz), resamples
 
     def evaluate(self, corpus, data_source, args, criterion, iwae=False, num_importance_samples=3):
         self.eval()
@@ -173,13 +188,19 @@ class PFLM(nn.Module):
         total_loss = 0
         total_nll = 0
         total_tokens = 0
+        total_resamples = 0
+        batch_idx = 0
         for batch in tqdm(data_source):
             data, targets = batch.text, batch.target
-            elbo, NLL, tokens = self.forward(data, targets, args, num_importance_samples, criterion)
+            elbo, NLL, tokens, resamples = self.forward(data, targets, args, num_importance_samples, criterion)
             total_loss += elbo.detach().data
             total_nll += NLL
             total_tokens += tokens
-        print("eval: {:.3f} NLL | current anneal: {:.3f}".format(total_nll / total_loss[0], old_anneal))
+            total_resamples += resamples
+            batch_idx += 1
+        print("eval: {:.3f} NLL | current anneal: {:.3f} | average resamples: {:.1f}".format(total_nll / total_loss[0],
+                                                                                             old_anneal,
+                                                                                             total_resamples/batch_idx))
         args.anneal = old_anneal
 
         # duplicate total_loss because we don't have a separate ELBO loss here, though we can grab it
@@ -192,13 +213,15 @@ class PFLM(nn.Module):
         def train_loop(profile=False):
             total_loss = 0
             total_tokens = 0
+            total_resamples = 0
             batch_idx = 0
 
             # for pretty printing the loss in each chunk
             last_chunk_loss = 0
             last_chunk_tokens = 0
+            last_chunk_resamples = 0
 
-            for batch in train_data:
+            for batch in tqdm(train_data):
                 if profile and batch_idx > 10:
                     print("breaking because profiling finished;")
                     break
@@ -206,7 +229,7 @@ class PFLM(nn.Module):
                     args.anneal = min(args.anneal + args.kl_anneal_rate, 1.)
                 optimizer.zero_grad()
                 data, targets = batch.text, batch.target
-                elbo, NLL, tokens = self.forward(data, targets, args, num_importance_samples, criterion)
+                elbo, NLL, tokens, resamples = self.forward(data, targets, args, num_importance_samples, criterion)
                 loss = elbo/tokens
                 loss.backward()
                 torch.nn.utils.clip_grad_norm(self.parameters(), args.clip)
@@ -214,25 +237,29 @@ class PFLM(nn.Module):
 
                 total_loss += elbo.detach()
                 total_tokens += tokens
+                total_resamples += resamples
 
                 # print if necessary
                 if batch_idx % args.log_interval == 0 and batch_idx > 0:
-                    pass
                     chunk_loss = total_loss.data[0] - last_chunk_loss
                     chunk_tokens = total_tokens - last_chunk_tokens
+                    chunk_resamples = (total_resamples - last_chunk_resamples) / args.log_interval
+                    print(total_resamples)
                     print_in_epoch_summary(epoch, batch_idx, args.batch_size, dataset_size,
-                                           loss.data[0], NLL / tokens, {'Chunk Loss': chunk_loss / chunk_tokens},
+                                           loss.data[0], NLL / tokens,
+                                           {'Chunk Loss': chunk_loss / chunk_tokens, 'resamples': chunk_resamples},
                                            tokens, "anneal={:.2f}".format(args.anneal))
                     last_chunk_loss = total_loss.data[0]
                     last_chunk_tokens = total_tokens
+                    last_chunk_resamples = total_resamples
                 batch_idx += 1  # because no cheap generator smh
             return total_loss, total_tokens
 
-        if args.prof is not None:
+        if args.prof is None:
+            total_loss, total_tokens = train_loop(False)
+            return total_loss[0] / total_tokens
+        else:
             with torch.autograd.profiler.profile() as prof:
                 _, _ = train_loop(True)
             prof.export_chrome_trace(args.prof)
             sys.exit(0)
-        else:
-            total_loss, total_tokens = train_loop(True)
-            return total_loss[0] / total_tokens
