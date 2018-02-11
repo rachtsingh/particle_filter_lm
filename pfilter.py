@@ -121,9 +121,10 @@ class PFLM(nn.Module):
         for i in range(seq_len):
             h, c = self.z_decoder(hidden_states[i], (h, c))
             mean = self.mean(h)
+            # logvar = self.logvar(h)
 
             # build the next z sample
-            std = 1
+            std = 1  # (logvar/2).exp()
             eps = Variable(torch.randn(mean.size()))
             if torch.cuda.is_available():
                 eps = eps.cuda()
@@ -136,6 +137,7 @@ class PFLM(nn.Module):
             nlls[i] = NLL.data
 
             # compute the weight using `reweight` on page (4)
+            # prior_mean, prior_logvar = torch.split(p_h, self.z_dim, 1)
             f_term = -0.5 * (LOG_2PI) - 0.5 * (z - p_h).pow(2).sum(1)  # prior
             r_term = -0.5 * (LOG_2PI) - 0.5 * eps.pow(2).sum(1)  # proposal
             alpha = -NLL + args.anneal * (f_term - r_term)
