@@ -39,8 +39,8 @@ parser.add_argument('--kl-anneal-delay', type=float, default=4,
                     help='number of epochs to delay increasing the KL divergence contribution')
 parser.add_argument('--kl-anneal-rate', type=float, default=0.0001,
                     help='amount to increase the KL divergence amount *per batch*')
-parser.add_argument('--keep-rate', type=float, default=0.5,
-                    help='rate at which to keep words during decoders')
+parser.add_argument('--kl-anneal-start', type=float, default=0.0001,
+                    help='starting KL annealing value; upperbounds initial KL before annealing')
 parser.add_argument('--epochs', type=int, default=1000,
                     help='upper epoch limit')
 parser.add_argument('--batch_size', type=int, default=80, metavar='N',
@@ -84,6 +84,8 @@ parser.add_argument('--wdecay', type=float, default=1.2e-6,
                     help='weight decay applied to all weights')
 parser.add_argument('--prof', type=str, default=None,
                     help='If specified, profile the first 10 batches and dump to <prof>')
+parser.add_argument('--use-sru', action='store_true',
+                    help='whether to use Tao\'s optimized RNN implementation [NOTE: not currently implemented]')
 args = parser.parse_args()
 
 print("running {}".format(' '.join(sys.argv)))

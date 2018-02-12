@@ -5,7 +5,6 @@ architecture because we need to evaluate log-likelihood inside the forward pass
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
-from torch.nn.functional import softmax
 import math
 import sys
 from tqdm import tqdm
@@ -38,14 +37,14 @@ class PFLM(nn.Module):
         self.logvar = nn.Linear(z_dim, z_dim)
 
         if autoregressive_prior:
-            self.ar_prior_mean = nn.LSTMCell(z_dim, z_dim)
-            # self.ar_prior_mean = nn.LSTMCell(z_dim + ninp, z_dim)
+            # self.ar_prior_mean = nn.GRUCell(z_dim, z_dim)
+            self.ar_prior_mean = nn.GRUCell(z_dim + ninp, z_dim)
 
         # decoder side
-        self.z_decoder = nn.LSTMCell(2 * nhid, z_dim)  # we're going to feed the output from the last step in at every input
+        self.z_decoder = nn.GRUCell(2 * nhid, z_dim)  # we're going to feed the output from the last step in at every input
         self.dec_embedding = nn.Embedding(ntoken, ninp)
         self.dropout = nn.Dropout(dropout)
-        self.decoder = torch.nn.LSTMCell(z_dim + ninp, nhid)  # note the difference here
+        self.decoder = torch.nn.GRUCell(z_dim + ninp, nhid)  # note the difference here
 
         self.out_embedding = nn.Linear(nhid, ntoken)
         self.dec = nn.ModuleList([self.z_decoder, self.dec_embedding, self.decoder, self.out_embedding])
@@ -73,8 +72,7 @@ class PFLM(nn.Module):
     def init_hidden(self, bsz, dim, directions=1, squeeze=False):
         weight = next(self.parameters()).data
         if squeeze:
-            return (Variable(weight.new(directions, bsz, dim).zero_().squeeze()),
-                    Variable(weight.new(directions, bsz, dim).zero_().squeeze()))
+            return Variable(weight.new(directions, bsz, dim).zero_().squeeze())
         else:
             return (Variable(weight.new(directions, bsz, dim).zero_()),
                     Variable(weight.new(directions, bsz, dim).zero_()))
@@ -101,9 +99,9 @@ class PFLM(nn.Module):
         # out_emb, hidden_states should be viewed as (n_particles x batch_sz) - this means that's true for h as well
 
         # run the z-decoder at this point, evaluating the NLL at each step
-        p_h, p_c = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)  # initially zero
-        h, c = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)
-        d_h, d_c = self.init_hidden(batch_sz * n_particles, self.nhid, squeeze=True)
+        p_h = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)  # initially zero
+        h = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)
+        d_h = self.init_hidden(batch_sz * n_particles, self.nhid, squeeze=True)
 
         # we maintain two Tensors, [seq_len x batch_sz]:
         # ancestors = input.data.new(seq_len + 1, n_particles, batch_sz).long().zero_()
@@ -119,27 +117,27 @@ class PFLM(nn.Module):
         resamples = 0
 
         for i in range(seq_len):
-            h, c = self.z_decoder(hidden_states[i], (h, c))
+            h = self.z_decoder(hidden_states[i], h)
             mean = self.mean(h)
-            # logvar = self.logvar(h)
+            logvar = self.logvar(h)
 
             # build the next z sample
-            std = 1  # (logvar/2).exp()
+            std = (logvar/2).exp()
             eps = Variable(torch.randn(mean.size()))
             if torch.cuda.is_available():
                 eps = eps.cuda()
             z = (eps * std) + mean
 
             # now, compute the log-likelihood of the data given this mean, and the input out_emb
-            d_h, d_c = self.decoder(torch.cat([z, out_emb[i]], 1), (d_h, d_c))
+            d_h = self.decoder(torch.cat([z, out_emb[i]], 1), d_h)
             logits = self.out_embedding(d_h)
             NLL = criterion(logits, input[i].repeat(n_particles))
             nlls[i] = NLL.data
 
             # compute the weight using `reweight` on page (4)
             # prior_mean, prior_logvar = torch.split(p_h, self.z_dim, 1)
-            f_term = -0.5 * (LOG_2PI) - 0.5 * (z - p_h).pow(2).sum(1)  # prior
-            r_term = -0.5 * (LOG_2PI) - 0.5 * eps.pow(2).sum(1)  # proposal
+            f_term = -0.5 * ((LOG_2PI) * self.z_dim) - 0.5 * (z - p_h).pow(2).sum(1)  # prior
+            r_term = -0.5 * (LOG_2PI + logvar).sum(1) - 0.5 * eps.pow(2).sum(1)  # proposal
             alpha = -NLL + args.anneal * (f_term - r_term)
 
             wa = accumulated_weights + alpha.view(n_particles, batch_sz)
@@ -154,9 +152,8 @@ class PFLM(nn.Module):
             effective_sample_size = 1./probs.pow(2).sum(0)
 
             # resample / RSAMP if 3 batch elements need resampling
-            if ((effective_sample_size / n_particles) < 0.6).sum() > 0:
+            if ((effective_sample_size / n_particles) < 0.3).sum() > 0:
                 resamples += 1
-                # pdb.set_trace()
                 ancestors = torch.multinomial(probs.transpose(0, 1), n_particles, True)
 
                 # now, reindex, which is the most important thing
@@ -165,19 +162,16 @@ class PFLM(nn.Module):
                     offsets = offsets.cuda()
                 unrolled_idx = Variable(ancestors.t().contiguous()+offsets).view(-1)
                 h = torch.index_select(h, 0, unrolled_idx)
-                c = torch.index_select(c, 0, unrolled_idx)
                 p_h = torch.index_select(p_h, 0, unrolled_idx)
-                p_c = torch.index_select(p_c, 0, unrolled_idx)
                 d_h = torch.index_select(d_h, 0, unrolled_idx)
-                d_c = torch.index_select(d_c, 0, unrolled_idx)
 
                 # reset accumulated_weights
                 accumulated_weights = -math.log(n_particles)  # will contain log w_{t - 1}
 
             if i != seq_len - 1:
                 # build the next mean prediction, feeding in the correct ancestor
-                # p_h, p_c = self.ar_prior_mean(torch.cat([h, out_emb[i]], 1), (p_h, p_c))
-                p_h, p_c = self.ar_prior_mean(h, (p_h, p_c))
+                p_h = self.ar_prior_mean(torch.cat([h, out_emb[i]], 1), p_h)
+                # p_h = self.ar_prior_mean(h, p_h)
 
         # now, we calculate the final log-marginal estimator
         nll = nlls.view(seq_len, n_particles, batch_sz).mean(1).sum()
@@ -211,6 +205,9 @@ class PFLM(nn.Module):
     def train_epoch(self, corpus, train_data, criterion, optimizer, epoch, args, num_importance_samples):
         self.train()
         dataset_size = len(train_data.data())  # this will be approximate
+
+        if epoch <= args.kl_anneal_delay:
+            num_importance_samples = 2   # less need for a filter if you're just pretraining the generation net
 
         def train_loop(profile=False):
             total_loss = 0
