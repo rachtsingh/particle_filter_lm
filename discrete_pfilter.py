@@ -1,23 +1,24 @@
 """
-This model is the particle filter LM I've been building up towards. In particular it needs a slightly different
-architecture because we need to evaluate log-likelihood inside the forward pass
+This is the same model as pfilter.py (i.e. a language modeling particle filter), but with discrete latent choices rather than continuous.
+The hope is that this ends up being more interpretable.
 """
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
+from torch.distributions import RelaxedOneHotCategorical, OneHotCategorical
 import math
 import sys
 from tqdm import tqdm
 import pdb  # noqa: F401
 
-from utils import print_in_epoch_summary, log_sum_exp
+from utils import print_in_epoch_summary, log_sum_exp, any_nans  # noqa: F401
 from locked_dropout import LockedDropout  # noqa: F401
 from embed_regularize import embedded_dropout  # noqa: F401
 
 LOG_2PI = math.log(2 * math.pi)
 
 
-class PFLM(nn.Module):
+class DiscretePFLM(nn.Module):
     """
     Here, encoder refers to the encoding RNN, unlike in baseline.py
     We're using a single layer RNN on the encoder side, but the decoder is essentially two RNNs
@@ -25,7 +26,7 @@ class PFLM(nn.Module):
 
     def __init__(self, ntoken, ninp, nhid, z_dim, nlayers, dropout=0.5, dropouth=0.5,
                  dropouti=0.5, dropoute=0.1, wdrop=0., autoregressive_prior=False):
-        super(PFLM, self).__init__()
+        super(DiscretePFLM, self).__init__()
 
         # encoder side
         self.inp_embedding = nn.Embedding(ntoken, ninp)
@@ -33,12 +34,12 @@ class PFLM(nn.Module):
         self.enc = nn.ModuleList([self.inp_embedding, self.encoder])
 
         # latent stuff
-        self.mean = nn.Linear(z_dim, z_dim)
-        self.logvar = nn.Linear(z_dim, z_dim)
+        self.logits = nn.Linear(z_dim, z_dim)
+        self.temp = Variable(torch.Tensor([0.67]))
+        self.temp_prior = Variable(torch.Tensor([0.5]))
 
         if autoregressive_prior:
-            # self.ar_prior_mean = nn.GRUCell(z_dim, z_dim)
-            self.ar_prior_mean = nn.GRUCell(z_dim + ninp, z_dim)
+            self.ar_prior_logits = nn.GRUCell(z_dim + ninp, z_dim)
 
         # decoder side
         self.z_decoder = nn.GRUCell(2 * nhid, z_dim)  # we're going to feed the output from the last step in at every input
@@ -63,6 +64,11 @@ class PFLM(nn.Module):
 
         self.aprior = autoregressive_prior
 
+    def cuda(self, *args, **kwargs):
+        self.temp = self.temp.cuda()
+        self.temp_prior = self.temp_prior.cuda()
+        super(DiscretePFLM, self).cuda(*args, **kwargs)
+
     def init_weights(self):
         initrange = 0.1
         self.inp_embedding.weight.data.uniform_(-initrange, initrange)
@@ -77,7 +83,7 @@ class PFLM(nn.Module):
             return (Variable(weight.new(directions, bsz, dim).zero_()),
                     Variable(weight.new(directions, bsz, dim).zero_()))
 
-    def forward(self, input, targets, args, n_particles, criterion):
+    def forward(self, input, targets, args, n_particles, criterion, test=False):
         """
         This version takes the inputs, and does not expose the logits, but instead
         computes the losses directly
@@ -118,33 +124,42 @@ class PFLM(nn.Module):
 
         for i in range(seq_len):
             h = self.z_decoder(hidden_states[i], h)
-            mean = self.mean(h)
-            logvar = self.logvar(h)
+            logits = self.logits(h)
 
             # build the next z sample
-            std = (logvar/2).exp()
-            eps = Variable(torch.randn(mean.size()))
-            if torch.cuda.is_available():
-                eps = eps.cuda()
-            z = (eps * std) + mean
+            if test:
+                q = OneHotCategorical(logits=logits)
+                z = q.sample()
+            else:
+                q = RelaxedOneHotCategorical(temperature=self.temp, logits=logits)
+                z = q.rsample()
             h = z
+
+            # prior
+            if test:
+                p = OneHotCategorical(logits=p_h)
+            else:
+                p = RelaxedOneHotCategorical(temperature=self.temp_prior, logits=p_h)
 
             # now, compute the log-likelihood of the data given this mean, and the input out_emb
             d_h = self.decoder(torch.cat([z, out_emb[i]], 1), d_h)
-            logits = self.out_embedding(d_h)
-            NLL = criterion(logits, input[i].repeat(n_particles))
+            decoder_logits = self.out_embedding(d_h)
+            NLL = criterion(decoder_logits, input[i].repeat(n_particles))
             nlls[i] = NLL.data
 
             # compute the weight using `reweight` on page (4)
             # prior_mean, prior_logvar = torch.split(p_h, self.z_dim, 1)
-            f_term = -0.5 * ((LOG_2PI) * self.z_dim) - 0.5 * (z - p_h).pow(2).sum(1)  # prior
-            r_term = -0.5 * (LOG_2PI + logvar).sum(1) - 0.5 * eps.pow(2).sum(1)  # proposal
+            f_term = q.log_prob(z)  # prior
+            r_term = p.log_prob(z)  # proposal
             alpha = -NLL + args.anneal * (f_term - r_term)
 
             wa = accumulated_weights + alpha.view(n_particles, batch_sz)
 
             # sample ancestors, and reindex everything
             Z = log_sum_exp(wa, dim=0)  # line 7
+            if (Z.data > 0).any():
+                pdb.set_trace()
+
             loss += Z  # line 8
             accumulated_weights = wa - Z  # line 9
             probs = accumulated_weights.data.exp()
@@ -171,7 +186,7 @@ class PFLM(nn.Module):
 
             if i != seq_len - 1:
                 # build the next mean prediction, feeding in the correct ancestor
-                p_h = self.ar_prior_mean(torch.cat([h, out_emb[i]], 1), p_h)
+                p_h = self.ar_prior_logits(torch.cat([h, out_emb[i]], 1), p_h)
 
         # now, we calculate the final log-marginal estimator
         nll = nlls.view(seq_len, n_particles, batch_sz).mean(1).sum()
@@ -181,14 +196,18 @@ class PFLM(nn.Module):
         self.eval()
         old_anneal = args.anneal  # save to replace after evaluation
         args.anneal = 1.
+        old_temps = self.temp, self.temp_prior
+        self.temp = Variable(self.temp.data.new([0]))
+        self.temp_prior = Variable(self.temp_prior.data.new([0]))
         total_loss = 0
         total_nll = 0
         total_tokens = 0
         total_resamples = 0
         batch_idx = 0
+
         for batch in tqdm(data_source):
             data, targets = batch.text, batch.target
-            elbo, NLL, tokens, resamples = self.forward(data, targets, args, num_importance_samples, criterion)
+            elbo, NLL, tokens, resamples = self.forward(data, targets, args, num_importance_samples, criterion, test=True)
             total_loss += elbo.detach().data
             total_nll += NLL
             total_tokens += tokens
@@ -198,6 +217,7 @@ class PFLM(nn.Module):
                                                                                              old_anneal,
                                                                                              total_resamples/batch_idx))
         args.anneal = old_anneal
+        self.temp, self.temp_prior = old_temps
 
         # duplicate total_loss because we don't have a separate ELBO loss here, though we can grab it
         return total_loss[0] / total_tokens, total_loss[0] / total_tokens, total_nll / total_tokens
@@ -252,11 +272,11 @@ class PFLM(nn.Module):
                     last_chunk_tokens = total_tokens
                     last_chunk_resamples = total_resamples
                 batch_idx += 1  # because no cheap generator smh
-            return total_loss, total_tokens
+            return total_loss.data[0], total_tokens
 
         if args.prof is None:
             total_loss, total_tokens = train_loop(False)
-            return total_loss[0] / total_tokens
+            return total_loss / total_tokens
         else:
             with torch.autograd.profiler.profile() as prof:
                 _, _ = train_loop(True)

@@ -5,7 +5,6 @@ Dumped a profiler trace of c5a81deb0aaa0ae1cbcff85e3b18e7cae9e07c94 to /datadriv
 Also, on master there are JIT optimizations which are probably useful, given how many operations we have in the forward pass: https://gist.github.com/zdevito/4aafb8fea540dfd7644cc09b2ce78230
 
 ## Posterior collapse
-Posterior collapse is more prevalent on particle filter models and 
 
 
 ## Similar papers / lit review
@@ -27,6 +26,8 @@ Posterior collapse is more prevalent on particle filter models and
     - https://openreview.net/pdf?id=r1drp-WCZ (most recent)
     - https://arxiv.org/abs/1711.11179
     - ICLR comments are useful as well, it was rejected (https://openreview.net/forum?id=r1drp-WCZ)
-        -  
 
-what is particle smoothing?
+## TODO
+1. Extract single word sentiment labels from this torchtext garbage; fix evaluate bug in discrete pfilter; fix resample bug in discrete_pfilter
+  - evaluate bug was 0-temperature not being handled correctly in RelaxedCategorical
+  - resample bug is serious beeswax, took forever to debug - it was torch.multinomial being crap, I think? reprod, but there was a fix a few days ago, so recompiling latest master.

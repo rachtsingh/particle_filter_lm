@@ -1,6 +1,7 @@
 from torch.autograd import Variable
 import sys
 import subprocess
+import numpy as np
 import pdb  # noqa: F401
 
 
@@ -38,3 +39,9 @@ def log_sum_exp(arr, dim=0):
     else:
         A = Variable(arr.max(dim)[0].data, requires_grad=False).unsqueeze(dim)
     return (A + (arr - A).exp().sum(dim, keepdim=True).log()).squeeze()
+
+
+def any_nans(a):
+    if isinstance(a, Variable):
+        a = a.data
+    return np.isnan(a.cpu().numpy()).any()
