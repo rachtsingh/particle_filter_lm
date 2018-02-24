@@ -10,17 +10,19 @@ import pdb  # noqa: F401
 from torchtext.datasets import PennTreeBank
 from src.data import PTBSeq2Seq
 from src.utils import get_sha
+from src.sst import WordLevelSST
 
 from src import baseline
 from src import rvae
 from src import sequential
 from src import pfilter
+from src import discrete_pfilter
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
 parser.add_argument('--dataset', type=str, default='ptb',
                     help='one of [ptb (default), wt2]')
 parser.add_argument('--model', type=str, default='rvae',
-                    help='type of model to use (baseline, rvae, sequential, filter)')
+                    help='type of model to use (baseline, rvae, sequential, filter, discrete_filter)')
 parser.add_argument('--emsize', type=int, default=512,
                     help='size of word embeddings')
 parser.add_argument('--nhid', type=int, default=1024,
@@ -39,8 +41,8 @@ parser.add_argument('--kl-anneal-delay', type=float, default=4,
                     help='number of epochs to delay increasing the KL divergence contribution')
 parser.add_argument('--kl-anneal-rate', type=float, default=0.0001,
                     help='amount to increase the KL divergence amount *per batch*')
-parser.add_argument('--keep-rate', type=float, default=0.5,
-                    help='rate at which to keep words during decoders')
+parser.add_argument('--kl-anneal-start', type=float, default=0.0001,
+                    help='starting KL annealing value; upperbounds initial KL before annealing')
 parser.add_argument('--epochs', type=int, default=1000,
                     help='upper epoch limit')
 parser.add_argument('--batch_size', type=int, default=80, metavar='N',
@@ -57,6 +59,10 @@ parser.add_argument('--dropoute', type=float, default=0.1,
                     help='dropout to remove words from embedding layer (0 = no dropout)')
 parser.add_argument('--wdrop', type=float, default=0.5,
                     help='amount of weight dropout to apply to the RNN hidden to hidden matrix')
+parser.add_argument('--temp', type=float, default=0.6,
+                    help='temperature of the posterior to use for relaxed discrete latents')
+parser.add_argument('--temp_prior', type=float, default=0.4,
+                    help='temperature of the prior to use for relaxed discrete latents')
 parser.add_argument('--not-tied', action='store_true',
                     help='tie the word embedding and softmax weights')
 parser.add_argument('--max-kl-penalty', type=float, default=0.,
@@ -71,7 +77,9 @@ parser.add_argument('--nonmono', type=int, default=5,
                     help='random seed')
 parser.add_argument('--cuda', action='store_false',
                     help='use CUDA')
-parser.add_argument('--log-interval', type=int, default=250, metavar='N',
+parser.add_argument('--semi-supervised', action='store_true',
+                    help='whether to try to do semisupervised training on the sentiment dataset')
+parser.add_argument('--log-interval', type=int, default=100, metavar='N',
                     help='report interval')
 randomhash = ''.join(str(time.time()).split('.'))
 parser.add_argument('--save', type=str,  default=randomhash+'.pt',
@@ -82,6 +90,10 @@ parser.add_argument('--beta', type=float, default=1,
                     help='beta slowness regularization applied on RNN activiation (beta = 0 means no regularization)')
 parser.add_argument('--wdecay', type=float, default=1.2e-6,
                     help='weight decay applied to all weights')
+parser.add_argument('--prof', type=str, default=None,
+                    help='If specified, profile the first 10 batches and dump to <prof>')
+parser.add_argument('--use-sru', action='store_true',
+                    help='whether to use Tao\'s optimized RNN implementation [NOTE: not currently implemented]')
 args = parser.parse_args()
 
 print("running {}".format(' '.join(sys.argv)))
@@ -109,20 +121,26 @@ if args.dataset == 'ptb' and args.model == 'baseline':
                                                          bptt_len=args.bptt,
                                                          device=device)
     corpus = train_data.dataset.fields['text'].vocab
-elif args.dataset == 'ptb':
+
+elif args.dataset == 'ptb' or args.dataset == 'sentiment':
+    if args.dataset == 'ptb':
+        cls = PTBSeq2Seq
+    else:
+        cls = WordLevelSST
+
     if args.no_iwae:
-        train_data, val_data, test_data = PTBSeq2Seq.iters(batch_size=args.batch_size, device=device)
+        train_data, val_data, test_data = cls.iters(batch_size=args.batch_size, device=device)
     else:
         # in IWAE evaluation, we want training to stay fast while eval has smaller batches ( * num_importance_samples)
         small_batch = 8 * (int(args.batch_size / args.num_importance_samples) // 8)
         if args.model == 'sequential':
-            train_data, val_data, test_data = PTBSeq2Seq.iters(batch_sizes=(args.batch_size, small_batch, small_batch), device=device)
+            train_data, val_data, test_data = cls.iters(batch_sizes=(args.batch_size, small_batch, small_batch), device=device)
         elif args.model == 'filter':
             # in the filter, everything is IWAE-fied, essentially
             args.batch_size = small_batch  # so that inside-epoch tracking is correct
-            train_data, val_data, test_data = PTBSeq2Seq.iters(batch_size=small_batch, device=device)
+            train_data, val_data, test_data = cls.iters(batch_size=small_batch, device=device)
         else:
-            train_data, val_data, test_data = PTBSeq2Seq.iters(batch_size=args.batch_size, device=device)
+            train_data, val_data, test_data = cls.iters(batch_size=args.batch_size, device=device)
 
     corpus = train_data.dataset.fields['target'].vocab
 ntokens = len(corpus)
@@ -138,19 +156,29 @@ elif args.model == 'rvae':
     model = rvae.RVAE(ntokens, args.emsize, args.nhid, args.z_dim, 1, args.dropout, args.dropouth,
                       args.dropouti, args.dropoute, args.wdrop, not args.not_tied)
 
-# OUR 1st MODEL (A SEQUENTIALLY GENERATED VAE)
+# OUR 1st MODEL (A sequentially generated VAE)
 elif args.model == 'sequential':
     model = sequential.SequentialLM(ntokens, args.emsize, args.nhid, args.z_dim, 1, args.dropout,
                                     args.dropouth, args.dropouti, args.dropoute, args.wdrop,
                                     not args.no_autoregressive_prior)
 
+# Our 2nd Model (same generative model, but we let Q be a particle filter)
 elif args.model == 'filter':
     model = pfilter.PFLM(ntokens, args.emsize, args.nhid, args.z_dim, 1, args.dropout,
                          args.dropouth, args.dropouti, args.dropoute, args.wdrop,
                          not args.no_autoregressive_prior)
 
+elif args.model == 'discrete_filter':
+    model = discrete_pfilter.DiscretePFLM(ntokens, args.emsize, args.nhid, args.z_dim, 1, args.dropout,
+                                          args.dropouth, args.dropouti, args.dropoute, args.wdrop,
+                                          not args.no_autoregressive_prior)
+else:
+    raise NotImplementedError("see python main.py --help for a list of models")
+
+
 if args.cuda and torch.cuda.is_available():
     model.cuda()
+
 total_params = sum(x.size()[0] * x.size()[1] if len(x.size()) > 1 else x.size()[0] for x in model.parameters())
 
 print("sha: {}".format(get_sha().strip()))

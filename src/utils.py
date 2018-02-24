@@ -1,6 +1,7 @@
 from torch.autograd import Variable
 import sys
 import subprocess
+import numpy as np
 import pdb  # noqa: F401
 
 
@@ -21,7 +22,7 @@ def print_in_epoch_summary(epoch, batch_idx, batch_size, dataset_size, loss, NLL
     """
     loss: ELBO/IWAE/other final loss, *divided by `tokens`*
     """
-    kl_string = '\t'.join(["{}: {:.3f}".format(key, val) for key, val in KLs.items()])
+    kl_string = ' | '.join(["{}: {:.2f}".format(key, val) for key, val in KLs.items()])
     print('Train Epoch: {} [{:<5}/{} ({:<2.0f}%)]\tLoss: {:.3f}\tNLL: {:.3f}\t{}'.format(
         epoch, (batch_idx + 1) * batch_size, dataset_size,
         100. * (batch_idx + 1) / (dataset_size / batch_size),
@@ -38,3 +39,9 @@ def log_sum_exp(arr, dim=0):
     else:
         A = Variable(arr.max(dim)[0].data, requires_grad=False).unsqueeze(dim)
     return (A + (arr - A).exp().sum(dim, keepdim=True).log()).squeeze()
+
+
+def any_nans(a):
+    if isinstance(a, Variable):
+        a = a.data
+    return np.isnan(a.cpu().numpy()).any()
