@@ -109,13 +109,6 @@ class DiscretePFLM(nn.Module):
         h = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)
         d_h = self.init_hidden(batch_sz * n_particles, self.nhid, squeeze=True)
 
-        # we maintain two Tensors, [seq_len x batch_sz]:
-        # ancestors = input.data.new(seq_len + 1, n_particles, batch_sz).long().zero_()
-        # init_ancestors = torch.arange(n_particles).view(-1, 1).repeat(1, batch_sz).long()
-        # if d_h.is_cuda:
-        #     init_ancestors = init_ancestors.cuda()
-        # ancestors[0] = init_ancestors
-
         nlls = hidden_states.data.new(seq_len, batch_sz * n_particles)
         loss = 0
 
@@ -148,16 +141,15 @@ class DiscretePFLM(nn.Module):
             nlls[i] = NLL.data
 
             # compute the weight using `reweight` on page (4)
-            # prior_mean, prior_logvar = torch.split(p_h, self.z_dim, 1)
-            f_term = q.log_prob(z)  # prior
-            r_term = p.log_prob(z)  # proposal
+            f_term = p.log_prob(z)  # prior
+            r_term = q.log_prob(z)  # proposal
             alpha = -NLL + args.anneal * (f_term - r_term)
 
             wa = accumulated_weights + alpha.view(n_particles, batch_sz)
 
             # sample ancestors, and reindex everything
             Z = log_sum_exp(wa, dim=0)  # line 7
-            if (Z.data > 0).any():
+            if (Z.data > 0.1).any():
                 pdb.set_trace()
 
             loss += Z  # line 8
