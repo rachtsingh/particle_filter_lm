@@ -8,13 +8,13 @@ import torch.nn as nn
 import pdb  # noqa: F401
 
 from torchtext.datasets import PennTreeBank
-from data import PTBSeq2Seq
-from utils import get_sha
+from src.data import PTBSeq2Seq
+from src.utils import get_sha
 
-import baseline
-import rvae
-import sequential
-import pfilter
+from src import baseline
+from src import rvae
+from src import sequential
+from src import pfilter
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
 parser.add_argument('--dataset', type=str, default='ptb',
