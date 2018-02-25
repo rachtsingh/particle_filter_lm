@@ -3,6 +3,7 @@ from torch.utils import data
 import numpy as np
 from hmmlearn.hmm import MultinomialHMM
 
+
 def create_hmm_data(N, seq_len, x_dim, z_dim, params=None):
     hmm = MultinomialHMM(n_components=z_dim)
 
@@ -27,12 +28,13 @@ def create_hmm_data(N, seq_len, x_dim, z_dim, params=None):
         x, _ = hmm.sample(n_samples=seq_len)
         X[i] = x.reshape((seq_len,))
 
-    return (T, pi, emit), HMMRandomlyGenerated(torch.LongTensor(X))
+    return (T, pi, emit), HMMRandomlyGenerated(X)
+
 
 class HMMRandomlyGenerated(data.Dataset):
 
     def __init__(self, X):
-        self.data = data
+        self.data = X
 
     def __len__(self):
         return len(self.data)

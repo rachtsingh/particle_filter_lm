@@ -55,6 +55,9 @@ class HMM(nn.Module):
         return alpha, beta, posterior_marginal
 
     def log_marginal(self, input):
+        """
+        input: [seq_len x batch_size]
+        """
         alpha, beta, _ = self.forward_backward(input)
         marginals = (alpha * beta).sum(-1)
         assert max(marginals.var(0).abs() < 1e-6)

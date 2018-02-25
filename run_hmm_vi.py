@@ -35,8 +35,8 @@ parser.add_argument('--batch_size', type=int, default=80, metavar='N',
                     help='batch size')
 parser.add_argument('--temp', type=float, default=0.6,
                     help='temperature of the posterior to use for relaxed discrete latents')
-# parser.add_argument('--temp_prior', type=float, default=0.4,
-#                     help='temperature of the prior to use for relaxed discrete latents')
+parser.add_argument('--temp_prior', type=float, default=0.4,
+                    help='temperature of the prior to use for relaxed discrete latents')
 parser.add_argument('--num-importance-samples', type=int, default=5,
                     help='number of samples to take for IWAE')
 parser.add_argument('--seed', type=int, default=1111,
@@ -50,6 +50,8 @@ parser.add_argument('--save', type=str,  default=randomhash+'.pt',
                     help='path to save the final model')
 parser.add_argument('--prof', type=str, default=None,
                     help='If specified, profile the first 10 batches and dump to <prof>')
+parser.add_argument('--filter', action='store_true',
+                    help='Turn on particle filtering')
 args = parser.parse_args()
 
 print("running {}".format(' '.join(sys.argv)))
@@ -60,7 +62,7 @@ torch.manual_seed(args.seed)
 if torch.cuda.is_available():
     args.cuda = not args.no_cuda
     if not args.cuda:
-        print("WARNING: You have a CUDA device, so you should probably run with --cuda")
+        print("WARNING: You have a CUDA device, so you should probably run without --no-cuda")
         device = -1
     else:
         torch.cuda.manual_seed(args.seed)
@@ -72,15 +74,23 @@ else:
 ###############################################################################
 # Load data and build the model
 ###############################################################################
+data_kwargs = {'num_workers': 0, 'pin_memory': True} if args.cuda else {}
 
 if args.dataset == 'generate':
-    params, train_data = create_hmm_data(N=100, seq_len=20, x_dim=args.x_dim, z_dim=args.z_dim)
-    val_data = create_hmm_data(N=100, seq_len=15, x_dim=args.x_dim, z_dim=args.z_dim, params=params)
+    # small_batch = 8 * (int(args.batch_size / args.num_importance_samples) // 8)
+    small_batch = args.batch_size
+    params, train_data = create_hmm_data(N=1000, seq_len=20, x_dim=args.x_dim, z_dim=args.z_dim)
+    _, val_data = create_hmm_data(N=100, seq_len=15, x_dim=args.x_dim, z_dim=args.z_dim, params=params)
+    train_loader = torch.utils.data.DataLoader(train_data, batch_size=small_batch,
+                                               shuffle=True, **data_kwargs)
+    val_loader = torch.utils.data.DataLoader(val_data, batch_size=small_batch,
+                                             shuffle=True, **data_kwargs)
 else:
     raise NotImplementedError("that dataset is not implemented")
 
 # build the model using the true parameters of the generative model
-model = hmm_filter.HMMInference(z_dim=args.z_dim, x_dim=args.x_dim, nhid=args.nhid, params=params)
+model = hmm_filter.HMMInference(z_dim=args.z_dim, x_dim=args.x_dim, nhid=args.nhid,
+                                temp=args.temp, temp_prior=args.temp_prior, params=params)
 
 if args.cuda and torch.cuda.is_available():
     model.cuda()
@@ -106,16 +116,15 @@ try:
         epoch_start_time = time.time()
 
         if epoch < args.kl_anneal_delay:
-            args.anneal = 0.0001
+            args.anneal = args.kl_anneal_start
 
-        train_loss = model.train_epoch(train_data, optimizer, epoch, args, args.num_importance_samples)
+        train_loss = model.train_epoch(train_loader, optimizer, epoch, args, args.num_importance_samples)
 
         # let's ignore ASGD for now
-        val_loss, val_elbo, val_nll = model.evaluate(val_data, args, True, args.num_importance_samples)
+        val_loss, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
         print('-' * 89)
-        print('| end of epoch {:3d} | time: {:5.2f}s | valid IWAE {:5.2f} | valid ELBO {:5.2f} | valid NLL {:5.2f} | '
-              'valid ppl {:8.2f}'.format(epoch, (time.time() - epoch_start_time), val_loss, val_elbo, val_nll,
-                                         math.exp(val_loss) if val_loss < 10. else float('inf')))
+        print('| end of epoch {:3d} | time: {:5.2f}s | valid ELBO {:5.2f} | true marginal {:5.2f}'
+              ''.format(epoch, (time.time() - epoch_start_time), val_loss, true_marginal))
         print('-' * 89)
 
 except KeyboardInterrupt:
