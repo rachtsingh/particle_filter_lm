@@ -1,15 +1,21 @@
 import torch
-import pdb
+import pdb  # noqa: F401
 from torch import nn
-from torch.autograd import Variable
 from torch.distributions import OneHotCategorical
 
+
 class HMM(nn.Module):
-    def __init__(self, z_dim, x_dim):
+    def __init__(self, z_dim, x_dim, params=None):
         super(HMM, self).__init__()
         self.T = torch.Tensor(z_dim, z_dim)  # transition matrix -> each column is normalized
         self.pi = torch.zeros(z_dim)  # initial likelihoods - real probabilities
         self.emit = torch.Tensor(x_dim, z_dim)  # takes a 1-hot Z, and turns it into an x sample - real probabilities
+
+        if not(params is None):
+            T, pi, emit = params
+            self.T = torch.Tensor(T.T)
+            self.pi = torch.Tensor(pi)
+            self.emit = torch.Tensor(emit.T)
 
         self.z_dim = z_dim
         self.x_dim = x_dim
@@ -32,14 +38,14 @@ class HMM(nn.Module):
         seq_len, batch_size = input.size()
         alpha = torch.zeros((seq_len, batch_size, self.z_dim))
         beta = torch.zeros((seq_len, batch_size, self.z_dim))
-        
+
         # forward pass
         alpha[0] = (self.emit[input[0]] * self.pi.view(1, -1))
         beta[seq_len - 1, :, :] = 1.
 
         for t in range(1, seq_len):
             alpha[t] = (self.emit[input[t]] * torch.mm(alpha[t - 1], self.T.t()))
-        
+
         for t in range(seq_len - 2, -1, -1):
             beta[t] = torch.mm((self.emit[input[t + 1]] * beta[t + 1]), self.T)
 
