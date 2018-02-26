@@ -38,6 +38,8 @@ class HMM(nn.Module):
         seq_len, batch_size = input.size()
         alpha = torch.zeros((seq_len, batch_size, self.z_dim))
         beta = torch.zeros((seq_len, batch_size, self.z_dim))
+        if self.T.is_cuda:
+            alpha, beta = alpha.cuda(), beta.cuda()
 
         # forward pass
         alpha[0] = (self.emit[input[0]] * self.pi.view(1, -1))

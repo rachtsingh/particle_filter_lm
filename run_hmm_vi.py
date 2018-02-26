@@ -1,7 +1,6 @@
 import argparse
 import time
 import sys
-import math
 import numpy as np
 import torch
 import pdb  # noqa: F401
@@ -52,9 +51,14 @@ parser.add_argument('--prof', type=str, default=None,
                     help='If specified, profile the first 10 batches and dump to <prof>')
 parser.add_argument('--filter', action='store_true',
                     help='Turn on particle filtering')
+parser.add_argument('--quiet', action='store_true',
+                    help='Turn off printing except where enabled by another CLI flag')
+parser.add_argument('--print-best', action='store_true',
+                    help='Print the best validation loss, along with log marginal')
 args = parser.parse_args()
 
-print("running {}".format(' '.join(sys.argv)))
+if not args.quiet:
+    print("running {}".format(' '.join(sys.argv)))
 
 # Set the random seed manually for reproducibility.
 np.random.seed(args.seed)
@@ -62,7 +66,8 @@ torch.manual_seed(args.seed)
 if torch.cuda.is_available():
     args.cuda = not args.no_cuda
     if not args.cuda:
-        print("WARNING: You have a CUDA device, so you should probably run without --no-cuda")
+        if not args.quiet:
+            print("WARNING: You have a CUDA device, so you should probably run without --no-cuda")
         device = -1
     else:
         torch.cuda.manual_seed(args.seed)
@@ -97,16 +102,18 @@ if args.cuda and torch.cuda.is_available():
 
 total_params = sum(x.size()[0] * x.size()[1] if len(x.size()) > 1 else x.size()[0] for x in model.parameters())
 
-print("sha: {}".format(get_sha().strip()))
-print('args:', args)
-print('model total parameters:', total_params)
-print('model architecture:')
-print(model)
+if not args.quiet:
+    print("sha: {}".format(get_sha().strip()))
+    print('args:', args)
+    print('model total parameters:', total_params)
+    print('model architecture:')
+    print(model)
 
 # Loop over epochs.
 args.anneal = 0.01
 lr = args.lr
-best_val_loss = []
+best_val_loss = 1e10
+true_marginal = 0
 stored_loss = 100000000
 
 # At any point you can hit Ctrl + C to break out of training early.
@@ -122,11 +129,17 @@ try:
 
         # let's ignore ASGD for now
         val_loss, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
-        print('-' * 89)
-        print('| end of epoch {:3d} | time: {:5.2f}s | valid ELBO {:5.2f} | true marginal {:5.2f}'
-              ''.format(epoch, (time.time() - epoch_start_time), val_loss, true_marginal))
-        print('-' * 89)
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+        if not args.quiet:
+            print('-' * 89)
+            print('| end of epoch {:3d} | time: {:5.2f}s | valid ELBO {:5.2f} | true marginal {:5.2f}'
+                  ''.format(epoch, (time.time() - epoch_start_time), val_loss, true_marginal))
+            print('-' * 89)
 
 except KeyboardInterrupt:
-    print('-' * 89)
-    print('Exiting from training early')
+    if not args.quiet:
+        print('-' * 89)
+        print('Exiting from training early')
+if args.print_best:
+    print("{},{}".format(-best_val_loss, true_marginal))

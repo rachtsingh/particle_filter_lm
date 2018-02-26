@@ -218,7 +218,7 @@ class HMMInference(HMM):
                 total_resamples += resamples
 
                 # print if necessary
-                if batch_idx % args.log_interval == 0 and batch_idx > 0:
+                if batch_idx % args.log_interval == 0 and batch_idx > 0 and not args.quiet:
                     chunk_loss = total_loss.data[0] - last_chunk_loss
                     chunk_tokens = total_tokens - last_chunk_tokens
                     chunk_resamples = (total_resamples - last_chunk_resamples) / args.log_interval
