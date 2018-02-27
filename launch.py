@@ -1,11 +1,15 @@
-import subprocess
+from subprocess import check_output
+import numpy as np
+import pdb
 
-for nhid in [150, 300, 500]:
-    for dropouti in [0.1, 0.3]:
-        for dropoute in [0.1]:
-            for lr in [0.01, 0.025, 0.1]:
-                filename = "{}_{}_{}_{}.log".format(lr, nhid, dropouti, dropoute)
-                command = "python main.py --epochs 25 --lr {} --emsize {} --nhid {} --dropouti {} --dropoute {}".format(lr, nhid, nhid, dropouti, dropoute).split(' ')
-                print(command, filename)
-                with open(filename, 'w') as f:
-                    p = subprocess.run(command, stdout=f)
+values = np.zeros((3, 3))
+true_marginal = 0
+
+for i, z_dim in enumerate([150]):
+    for j, n_particles in enumerate([5, 25, 50]):
+        out = check_output("python run_hmm_exp.py --epochs 20 --nhid 32 --batch_size 10 --quiet --print-best --temp 0.8 --temp_prior 0.5 --z-dim {} --num-importance-samples {} --x-dim 100".format(z_dim, n_particles).split(' '))
+        v, true_marginal = map(float, out.split(","))
+        values[i][j] = v
+        print(z_dim, n_particles, v, true_marginal)
+# np.save('real_data_wo_filter.npy', values)
+pdb.set_trace()

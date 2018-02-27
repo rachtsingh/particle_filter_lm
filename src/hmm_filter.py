@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 from torch.distributions import RelaxedOneHotCategorical, OneHotCategorical, Categorical
+import numpy as np
 import math
 import sys
 import pdb  # noqa: F401
@@ -39,7 +40,24 @@ class HMMInference(HMM):
         # no more decoder - that's in the parent HMM
 
         self.init_weights()
+        if 'params' in kwargs and kwargs['params'] is None:
+            self.randomly_initialize()
         self.nhid = nhid
+
+    def randomly_initialize(self):
+        pdb.set_trace()
+        T = np.random.random(size=(self.z_dim, self.z_dim))
+        T = T/T.sum(axis=1).reshape((self.z_dim, 1))
+
+        pi = np.random.random(size=(self.z_dim,))
+        pi = pi/pi.sum()
+
+        emit = np.random.random(size=(self.z_dim, self.x_dim))
+        emit = emit/emit.sum(axis=1).reshape((self.z_dim, 1))
+
+        self.T = torch.from_numpy(T)
+        self.pi = torch.from_numpy(pi)
+        self.emit = torch.from_numpy(emit)
 
     def cuda(self, *args, **kwargs):
         self.temp = self.temp.cuda()
@@ -218,7 +236,7 @@ class HMMInference(HMM):
                 total_resamples += resamples
 
                 # print if necessary
-                if batch_idx % args.log_interval == 0 and batch_idx > 0:
+                if batch_idx % args.log_interval == 0 and batch_idx > 0 and not args.quiet:
                     chunk_loss = total_loss.data[0] - last_chunk_loss
                     chunk_tokens = total_tokens - last_chunk_tokens
                     chunk_resamples = (total_resamples - last_chunk_resamples) / args.log_interval
