@@ -1,7 +1,14 @@
+"""
+For sake of time, I've copied a bunch of code from HMM to HMM_EM;
+TODO: mv HMM_EM -> HMM, and add some Variable calls around to patch things up
+"""
+
 import torch
+from torch.autograd import Variable
 import pdb  # noqa: F401
 from torch import nn
-from torch.distributions import OneHotCategorical
+import numpy as np
+from utils import log_sum_exp
 
 
 class HMM(nn.Module):
@@ -66,8 +73,93 @@ class HMM(nn.Module):
         return marginals[0].log()
 
     def generate_data(self, N, T):
-        # pass here
-        x = torch.zeros((T, N, self.x_dim)).long()
-        x[0] = OneHotCategorical(probs=self.pi.data).sample(())
-        for t in range(1, T):
-            pass
+        # TODO (then we can drop the hmmlearn package except in tests)
+        pass
+
+
+class HMM_EM(nn.Module):
+    def __init__(self, z_dim, x_dim):
+        super(HMM_EM, self).__init__()
+        self.T = nn.Parameter(torch.Tensor(z_dim, z_dim))  # transition matrix -> each column is normalized
+        self.pi = nn.Parameter(torch.zeros(z_dim))  # initial likelihoods - real probabilities
+        self.emit = nn.Parameter(torch.Tensor(x_dim, z_dim))  # takes a 1-hot Z, and turns it into an x sample - real probabilities
+
+        self.z_dim = z_dim
+        self.x_dim = x_dim
+
+        self.randomly_initialize()
+
+    def randomly_initialize(self):
+        T = np.random.random(size=(self.z_dim, self.z_dim))
+        T = T/T.sum(axis=1).reshape((self.z_dim, 1))
+
+        pi = np.random.random(size=(self.z_dim,))
+        pi = pi/pi.sum()
+
+        emit = np.random.random(size=(self.z_dim, self.x_dim))
+        emit = emit/emit.sum(axis=1).reshape((self.z_dim, 1))
+
+        self.T.data = torch.from_numpy(T.T)
+        self.pi.data = torch.from_numpy(pi)
+        self.emit.data = torch.from_numpy(emit.T)
+        self.float()
+
+    def forward(self, input):
+        return self.log_marginal(input)
+
+    def forward_backward(self, input):
+        """
+        input: Variable([seq_len x batch_size])
+        """
+        input = input.long()
+
+        seq_len, batch_size = input.size()
+        alpha = [None for i in range(seq_len)]
+        beta = [None for i in range(seq_len)]
+
+        # forward pass
+        alpha[0] = self.emit[input[0]] * self.pi.view(1, -1)
+        beta[-1] = Variable(torch.ones(batch_size, self.z_dim))
+        if self.T.is_cuda:
+            beta[-1] = beta[-1].cuda()
+
+        for t in range(1, seq_len):
+            alpha[t] = (self.emit[input[t]] * torch.mm(alpha[t - 1], self.T.t()))
+
+        for t in range(seq_len - 2, -1, -1):
+            beta[t] = torch.mm((self.emit[input[t + 1]] * beta[t + 1]), self.T)
+
+        log_marginal = log_sum_exp(alpha[0].log() + beta[0].log(), dim=-1)
+        return alpha, beta, log_marginal[0]
+
+    def log_marginal(self, input):
+        """
+        input: [seq_len x batch_size]
+        """
+        _, _, log_marginal = self.forward_backward(input)
+        return log_marginal
+
+    def evaluate(self, data_source, args, num_samples=None):
+        self.eval()
+        total_loss = 0
+        for batch in data_source:
+            if args.cuda:
+                batch = batch.cuda()
+            data = Variable(batch.t().contiguous())
+            loss = self.forward(data).sum()
+            total_loss += loss.detach().data
+        return total_loss[0], total_loss[0]
+
+    def train_epoch(self, train_data, optimizer, epoch, args, num_samples=None):
+        self.train()
+        total_loss = 0
+        for batch in train_data:
+            if args.cuda:
+                batch = batch.cuda()
+            data = Variable(batch.t().contiguous())
+            optimizer.zero_grad()
+            loss = self.forward(data).sum()
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.detach()
+        return total_loss.data[0], -1

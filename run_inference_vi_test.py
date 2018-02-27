@@ -8,11 +8,16 @@ import pdb  # noqa: F401
 from src.utils import get_sha
 from src.hmm_dataset import create_hmm_data
 from src import hmm_filter
+from src import hmm
 
 parser = argparse.ArgumentParser(description='Demonstration of Sequential Latent VI for HMMs')
 parser.add_argument('--dataset', type=str, default='generate',
                     help='one of [generate, ...]')
-parser.add_argument('--nhid', type=int, default=1024,
+parser.add_argument('--inference', type=str, default='vi',
+                    help='which inference method to use (vi, em)')
+parser.add_argument('--load-hmm', type=str,
+                    help='which PyTorch file to load the HMM from, if any')
+parser.add_argument('--nhid', type=int, default=32,
                     help='number of hidden units per layer')
 parser.add_argument('--z-dim', type=int, default=5,
                     help='dimensionality of the hidden z')
@@ -82,20 +87,26 @@ else:
 data_kwargs = {'num_workers': 0, 'pin_memory': True} if args.cuda else {}
 
 if args.dataset == 'generate':
-    # small_batch = 8 * (int(args.batch_size / args.num_importance_samples) // 8)
-    small_batch = args.batch_size
-    params, train_data = create_hmm_data(N=1000, seq_len=20, x_dim=args.x_dim, z_dim=args.z_dim)
+    if args.load_hmm:
+        params = torch.load(args.load_hmm)
+    else:
+        params = None
+    params, train_data = create_hmm_data(N=1000, seq_len=20, x_dim=args.x_dim, z_dim=args.z_dim, params=params)
     _, val_data = create_hmm_data(N=100, seq_len=15, x_dim=args.x_dim, z_dim=args.z_dim, params=params)
-    train_loader = torch.utils.data.DataLoader(train_data, batch_size=small_batch,
+    train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size,
                                                shuffle=True, **data_kwargs)
-    val_loader = torch.utils.data.DataLoader(val_data, batch_size=small_batch,
+    val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size,
                                              shuffle=True, **data_kwargs)
 else:
     raise NotImplementedError("that dataset is not implemented")
 
+# params = None  # NOTE: remove when trying to do inference stuff
 # build the model using the true parameters of the generative model
-model = hmm_filter.HMMInference(z_dim=args.z_dim, x_dim=args.x_dim, nhid=args.nhid,
-                                temp=args.temp, temp_prior=args.temp_prior, params=params)
+if args.inference == 'vi':
+    model = hmm_filter.HMMInference(z_dim=args.z_dim, x_dim=args.x_dim, nhid=args.nhid,
+                                    temp=args.temp, temp_prior=args.temp_prior, params=params)
+elif args.inference == 'em':
+    model = hmm.HMM_EM(args.z_dim, args.x_dim)
 
 if args.cuda and torch.cuda.is_available():
     model.cuda()

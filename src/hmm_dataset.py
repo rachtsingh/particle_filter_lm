@@ -28,10 +28,18 @@ def create_hmm_data(N, seq_len, x_dim, z_dim, params=None):
         x, _ = hmm.sample(n_samples=seq_len)
         X[i] = x.reshape((seq_len,))
 
-    return (T, pi, emit), HMMRandomlyGenerated(X)
+    return (T, pi, emit), HMMData(X)
 
 
-class HMMRandomlyGenerated(data.Dataset):
+def sample_from_hmm(N, seq_len, hmm):
+    X = np.zeros((N, seq_len)).astype(np.int)
+    for i in range(N):
+        x, _ = hmm.sample(n_samples=seq_len)
+        X[i] = x.reshape((seq_len,))
+    return HMMData(X)
+
+
+class HMMData(data.Dataset):
 
     def __init__(self, X):
         self.data = X
