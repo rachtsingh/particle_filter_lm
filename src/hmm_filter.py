@@ -40,12 +40,12 @@ class HMMInference(HMM):
         # no more decoder - that's in the parent HMM
 
         self.init_weights()
-        if 'params' in kwargs and kwargs['params'] is None:
+        if 'params' not in kwargs or kwargs['params'] is None:
             self.randomly_initialize()
+        # otherwise, it's been handled by the parent
         self.nhid = nhid
 
     def randomly_initialize(self):
-        pdb.set_trace()
         T = np.random.random(size=(self.z_dim, self.z_dim))
         T = T/T.sum(axis=1).reshape((self.z_dim, 1))
 
@@ -55,9 +55,9 @@ class HMMInference(HMM):
         emit = np.random.random(size=(self.z_dim, self.x_dim))
         emit = emit/emit.sum(axis=1).reshape((self.z_dim, 1))
 
-        self.T = torch.from_numpy(T)
-        self.pi = torch.from_numpy(pi)
-        self.emit = torch.from_numpy(emit)
+        self.T = torch.from_numpy(T.T).float()
+        self.pi = torch.from_numpy(pi).float()
+        self.emit = torch.from_numpy(emit.T).float()
 
     def cuda(self, *args, **kwargs):
         self.temp = self.temp.cuda()
@@ -201,9 +201,6 @@ class HMMInference(HMM):
         self.train()
         dataset_size = len(train_data)
 
-        if epoch <= args.kl_anneal_delay:
-            num_importance_samples = 2   # less need for a filter if you're just pretraining the generation net
-
         def train_loop(profile=False):
             total_loss = 0
             total_tokens = 0
@@ -258,3 +255,116 @@ class HMMInference(HMM):
                 _, _ = train_loop(True)
             prof.export_chrome_trace(args.prof)
             sys.exit(0)
+
+
+class HMM_VI(HMMInference):
+    """
+    This model fits the prior, generative model, and inference jointly
+    Note that it inherits significantly from the parent class
+    """
+    def __init__(self, z_dim, x_dim, nhid, temp, temp_prior, *args, **kwargs):
+        super(HMM_VI, self).__init__(z_dim, x_dim, nhid, temp, temp_prior, *args, **kwargs)
+        self.T = nn.Parameter(self.T)
+        self.pi = nn.Parameter(self.pi)
+        self.emit = nn.Parameter(self.emit)
+
+    def decode(self, z, x):
+        """
+        Computes \log p(x | z); emit is [x_dim x z_dim], z is [batch_sz x z_dim]
+        result is [batch_sz x x_dim]
+        """
+        probs = torch.matmul(self.emit, z.unsqueeze(2)).squeeze()
+        return Categorical(probs=probs).log_prob(x)
+
+    def log_marginal(self, input):
+        return torch.Tensor([0])
+
+    def forward(self, input, args, n_particles, test=False):
+        """
+        This version takes the inputs, and does not expose the logits, but instead
+        computes the losses directly
+        """
+
+        # run the input and teacher-forcing inputs through the embedding layers here
+        seq_len, batch_sz = input.size()
+        emb = self.inp_embedding(input)
+        hidden = self.init_hidden(batch_sz, self.nhid, 2)  # bidirectional
+        hidden_states, (h, c) = self.encoder(emb, hidden)
+        hidden_states = hidden_states.repeat(1, n_particles, 1)
+
+        # run the z-decoder at this point, evaluating the NLL at each step
+        h = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)
+
+        nlls = hidden_states.data.new(seq_len, batch_sz * n_particles)
+        loss = 0
+
+        accumulated_weights = -math.log(n_particles)  # will contain log w_{t - 1}
+        resamples = 0
+
+        prior_probs = self.pi.unsqueeze(0).expand(batch_sz * n_particles, self.z_dim)
+
+        for i in range(seq_len):
+            h = self.z_decoder(hidden_states[i], h)
+            logits = self.logits(h)
+
+            # build the next z sample
+            if test:
+                q = OneHotCategorical(logits=logits)
+                z = q.sample()
+            else:
+                q = RelaxedOneHotCategorical(temperature=self.temp, logits=logits)
+                z = q.rsample()
+            h = z
+
+            # prior
+            if test:
+                p = OneHotCategorical(prior_probs)
+            else:
+                p = RelaxedOneHotCategorical(temperature=self.temp_prior, probs=prior_probs)
+
+            # now, compute the log-likelihood of the data given this z-sample
+            NLL = -self.decode(z, input[i].repeat(n_particles))  # diff. w.r.t. z
+            nlls[i] = NLL.data
+
+            # compute the weight using `reweight` on page (4)
+            f_term = p.log_prob(z)  # prior
+            r_term = q.log_prob(z)  # proposal
+            alpha = -NLL + (f_term - r_term)
+
+            wa = accumulated_weights + alpha.view(n_particles, batch_sz)
+
+            # sample ancestors, and reindex everything
+            Z = log_sum_exp(wa, dim=0)  # line 7
+            # if (Z.data > 0.1).any():
+            #     pdb.set_trace()
+
+            loss += Z  # line 8
+            accumulated_weights = wa - Z  # line 9
+
+            if args.filter:
+                probs = accumulated_weights.data.exp()
+                probs += 0.01
+                probs = probs / probs.sum(0, keepdim=True)
+                effective_sample_size = 1./probs.pow(2).sum(0)
+
+                # resample / RSAMP
+                if ((effective_sample_size / n_particles) < 0.3).sum() > 0:
+                    resamples += 1
+                    ancestors = torch.multinomial(probs.transpose(0, 1), n_particles, True)
+
+                    # now, reindex, which is the most important thing
+                    offsets = n_particles * torch.arange(batch_sz).unsqueeze(1).repeat(1, n_particles).long()
+                    if ancestors.is_cuda:
+                        offsets = offsets.cuda()
+                    unrolled_idx = Variable(ancestors.t().contiguous()+offsets).view(-1)
+                    h = torch.index_select(h, 0, unrolled_idx)
+
+                    # reset accumulated_weights
+                    accumulated_weights = -math.log(n_particles)  # will contain log w_{t - 1}
+
+            if i != seq_len - 1:
+                prior_probs = torch.matmul(self.T, z.unsqueeze(2)).squeeze()
+
+        # now, we calculate the final log-marginal estimator
+        nll = nlls.view(seq_len, n_particles, batch_sz).mean(1).sum()
+        return -loss.sum(), nll, (seq_len * batch_sz), resamples

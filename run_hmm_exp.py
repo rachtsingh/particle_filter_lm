@@ -40,9 +40,9 @@ parser.add_argument('--epochs', type=int, default=1000,
                     help='upper epoch limit')
 parser.add_argument('--batch_size', type=int, default=80, metavar='N',
                     help='batch size')
-parser.add_argument('--temp', type=float, default=0.6,
+parser.add_argument('--temp', type=float, default=0.8,
                     help='temperature of the posterior to use for relaxed discrete latents')
-parser.add_argument('--temp_prior', type=float, default=0.4,
+parser.add_argument('--temp_prior', type=float, default=0.5,
                     help='temperature of the prior to use for relaxed discrete latents')
 parser.add_argument('--num-importance-samples', type=int, default=5,
                     help='number of samples to take for IWAE')
@@ -113,8 +113,8 @@ val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size,
 params = None
 # build the model using the true parameters of the generative model
 if args.inference == 'vi':
-    model = hmm_filter.HMMInference(z_dim=args.z_dim, x_dim=args.x_dim, nhid=args.nhid,
-                                    temp=args.temp, temp_prior=args.temp_prior, params=None)
+    model = hmm_filter.HMM_VI(z_dim=args.z_dim, x_dim=args.x_dim, nhid=args.nhid,
+                              temp=args.temp, temp_prior=args.temp_prior, params=None)
 elif args.inference == 'em':
     model = hmm.HMM_EM(args.z_dim, args.x_dim)
 

@@ -8,7 +8,37 @@ from torch.autograd import Variable
 import pdb  # noqa: F401
 from torch import nn
 import numpy as np
-from utils import log_sum_exp
+from utils import log_sum_exp, any_nans
+
+
+def forward_backward_var(self, input):
+    """
+    input: Variable([seq_len x batch_size])
+    """
+    input = input.long()
+
+    seq_len, batch_size = input.size()
+    alpha = [None for i in range(seq_len)]
+    beta = [None for i in range(seq_len)]
+
+    T = nn.Softmax(dim=0)(self.T)
+    pi = nn.Softmax(dim=0)(self.pi)
+    emit = nn.Softmax(dim=0)(self.emit)
+
+    # forward pass
+    alpha[0] = emit[input[0]] * pi.view(1, -1)
+    beta[-1] = Variable(torch.ones(batch_size, self.z_dim))
+    if T.is_cuda:
+        beta[-1] = beta[-1].cuda()
+
+    for t in range(1, seq_len):
+        alpha[t] = (emit[input[t]] * torch.mm(alpha[t - 1], T.t()))
+
+    for t in range(seq_len - 2, -1, -1):
+        beta[t] = torch.mm((emit[input[t + 1]] * beta[t + 1]), T)
+
+    log_marginal = log_sum_exp(alpha[0].log() + beta[0].log(), dim=-1)
+    return alpha, beta, log_marginal
 
 
 class HMM(nn.Module):
@@ -82,12 +112,15 @@ class HMM_EM(nn.Module):
         super(HMM_EM, self).__init__()
         self.T = nn.Parameter(torch.Tensor(z_dim, z_dim))  # transition matrix -> each column is normalized
         self.pi = nn.Parameter(torch.zeros(z_dim))  # initial likelihoods - real probabilities
-        self.emit = nn.Parameter(torch.Tensor(x_dim, z_dim))  # takes a 1-hot Z, and turns it into an x sample - real probabilities
+        self.emit = nn.Parameter(torch.Tensor(x_dim, z_dim))  # takes a 1-hot Z, and turns it into an x sample - real probabilities - columns are normalized again
 
         self.z_dim = z_dim
         self.x_dim = x_dim
 
         self.randomly_initialize()
+
+    def forward_backward(self, input):
+        return forward_backward_var(self, input)
 
     def randomly_initialize(self):
         T = np.random.random(size=(self.z_dim, self.z_dim))
@@ -105,32 +138,7 @@ class HMM_EM(nn.Module):
         self.float()
 
     def forward(self, input):
-        return self.log_marginal(input)
-
-    def forward_backward(self, input):
-        """
-        input: Variable([seq_len x batch_size])
-        """
-        input = input.long()
-
-        seq_len, batch_size = input.size()
-        alpha = [None for i in range(seq_len)]
-        beta = [None for i in range(seq_len)]
-
-        # forward pass
-        alpha[0] = self.emit[input[0]] * self.pi.view(1, -1)
-        beta[-1] = Variable(torch.ones(batch_size, self.z_dim))
-        if self.T.is_cuda:
-            beta[-1] = beta[-1].cuda()
-
-        for t in range(1, seq_len):
-            alpha[t] = (self.emit[input[t]] * torch.mm(alpha[t - 1], self.T.t()))
-
-        for t in range(seq_len - 2, -1, -1):
-            beta[t] = torch.mm((self.emit[input[t + 1]] * beta[t + 1]), self.T)
-
-        log_marginal = log_sum_exp(alpha[0].log() + beta[0].log(), dim=-1)
-        return alpha, beta, log_marginal[0]
+        return -self.log_marginal(input)
 
     def log_marginal(self, input):
         """
@@ -146,7 +154,8 @@ class HMM_EM(nn.Module):
             if args.cuda:
                 batch = batch.cuda()
             data = Variable(batch.t().contiguous())
-            loss = self.forward(data).sum()
+            loss = self.forward(data)
+            loss = loss.sum()
             total_loss += loss.detach().data
         return total_loss[0], total_loss[0]
 
@@ -158,7 +167,11 @@ class HMM_EM(nn.Module):
                 batch = batch.cuda()
             data = Variable(batch.t().contiguous())
             optimizer.zero_grad()
-            loss = self.forward(data).sum()
+            loss = self.forward(data)
+            if any_nans(loss):
+                pdb.set_trace()
+            else:
+                loss = loss.sum()
             loss.backward()
             optimizer.step()
             total_loss += loss.detach()
