@@ -94,9 +94,6 @@ class HMM_EM(nn.Module):
 
         self.randomly_initialize()
 
-    def cuda(self, *args, **kwargs):
-        super(HMM, self).cuda(*args, **kwargs)
-
     def forward_backward(self, input):
         """
         input: Variable([seq_len x batch_size])
