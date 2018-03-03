@@ -1,0 +1,2 @@
+z_dim in [5, 15, 30]:
+    n_particles in [5, 15, 30]:
