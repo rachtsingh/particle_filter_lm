@@ -186,6 +186,11 @@ try:
             T_traj[epoch - 1] = T
             pi_traj[epoch - 1] = pi
             emit_traj[epoch - 1] = emit
+
+        if epoch % 10 == 0:
+            args.lr = args.lr * 0.8
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = args.lr
     flush()
 except KeyboardInterrupt:
     if not args.quiet:
