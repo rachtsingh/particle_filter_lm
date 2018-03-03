@@ -31,3 +31,7 @@ Also, on master there are JIT optimizations which are probably useful, given how
 1. Extract single word sentiment labels from this torchtext garbage; fix evaluate bug in discrete pfilter; fix resample bug in discrete_pfilter
   - evaluate bug was 0-temperature not being handled correctly in RelaxedCategorical
   - resample bug is serious beeswax, took forever to debug - it was torch.multinomial being crap, I think? reprod, but there was a fix a few days ago, so recompiling latest master.
+
+
+## random notes
+note: random init for larger_hmm_data.pt with z_dim=25, x_dim=50 was -14695.8707123 
