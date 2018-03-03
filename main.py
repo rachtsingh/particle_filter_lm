@@ -8,7 +8,7 @@ import torch.nn as nn
 import pdb  # noqa: F401
 
 from torchtext.datasets import PennTreeBank
-from src.data import PTBSeq2Seq
+from src.seq2seq_data import PTBSeq2Seq
 from src.utils import get_sha
 from src.sst import WordLevelSST
 

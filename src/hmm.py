@@ -28,9 +28,14 @@ class HMM(nn.Module):
         self.x_dim = x_dim
 
     def cuda(self, *args, **kwargs):
-        self.T = self.T.cuda()
-        self.pi = self.pi.cuda()
-        self.emit = self.emit.cuda()
+        if type(self.T) in (Variable, nn.Parameter):
+            self.T.data = self.T.data.cuda()
+            self.pi.data = self.pi.data.cuda()
+            self.emit.data = self.emit.data.cuda()
+        else:
+            self.T = self.T.cuda()
+            self.pi = self.pi.cuda()
+            self.emit = self.emit.cuda()
         super(HMM, self).cuda(*args, **kwargs)
 
     def forward(self):
@@ -88,6 +93,9 @@ class HMM_EM(nn.Module):
         self.x_dim = x_dim
 
         self.randomly_initialize()
+
+    def cuda(self, *args, **kwargs):
+        super(HMM, self).cuda(*args, **kwargs)
 
     def forward_backward(self, input):
         """

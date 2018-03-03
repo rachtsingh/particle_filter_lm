@@ -11,12 +11,13 @@ import pdb  # noqa: F401
 
 from src.utils import get_sha
 from src.hmm_dataset import create_hmm_data, HMMData
+from src.real_hmm_dataset import OneBillionWord
 from src import hmm_filter
 from src import hmm
 
 parser = argparse.ArgumentParser(description='Demonstration of Sequential Latent VI for HMMs')
-parser.add_argument('--dataset', type=str, default='generate',
-                    help='one of [generate, ...]')
+parser.add_argument('--dataset', type=str, default='1billion',
+                    help='one of [generate, 1billion, <something>.pt, ...]')
 parser.add_argument('--inference', type=str, default='vi',
                     help='which inference method to use (vi, em)')
 parser.add_argument('--load-hmm', type=str,
@@ -99,6 +100,10 @@ if args.dataset == 'generate':
     params, train_data = create_hmm_data(N=1000, seq_len=20, x_dim=args.x_dim, z_dim=args.z_dim, params=params)
     _, val_data = create_hmm_data(N=100, seq_len=15, x_dim=args.x_dim, z_dim=args.z_dim, params=params)
     # maybe use params here to get the 'true' HMM
+elif args.dataset == '1billion':
+    params = None
+    train_data = OneBillionWord('data/1_billion_word/1b-100k-train.hdf5')
+    val_data = OneBillionWord('data/1_billion_word/1b-100k-val.hdf5')
 else:
     # we'll load the dataset from the specified file
     params = None
@@ -179,10 +184,11 @@ try:
             print('| end of epoch {:3d} | time: {:5.2f}s | valid ELBO {:5.2f} | true marginal {:5.2f}'
                   ''.format(epoch, (time.time() - epoch_start_time), val_loss, true_marginal))
             print('-' * 89)
+
         if args.dump_param_traj:
-            T = nn.Softmax(dim=0)(model.T).data.numpy().T
-            pi = nn.Softmax(dim=0)(model.pi).data.numpy()
-            emit = nn.Softmax(dim=0)(model.emit).data.numpy().T
+            T = nn.Softmax(dim=0)(model.T).data.cpu().numpy().T
+            pi = nn.Softmax(dim=0)(model.pi).data.cpu().numpy()
+            emit = nn.Softmax(dim=0)(model.emit).data.cpu().numpy().T
             T_traj[epoch - 1] = T
             pi_traj[epoch - 1] = pi
             emit_traj[epoch - 1] = emit
