@@ -154,9 +154,9 @@ def flush():
     if args.save is not None:
         if args.inference in ('vi', 'em'):
             with open(args.save, 'w') as f:
-                T = nn.Softmax(dim=0)(model.T).data.numpy().T
-                pi = nn.Softmax(dim=0)(model.pi).data.numpy()
-                emit = nn.Softmax(dim=0)(model.emit).data.numpy().T
+                T = nn.Softmax(dim=0)(model.T).data.cpu().numpy().T
+                pi = nn.Softmax(dim=0)(model.pi).data.cpu().numpy()
+                emit = nn.Softmax(dim=0)(model.emit).data.cpu().numpy().T
                 params = (T, pi, emit)
                 torch.save(params, f)
                 print('saved parameters to {}'.format(args.save))
