@@ -140,8 +140,6 @@ class HMMInference(HMM):
 
             # sample ancestors, and reindex everything
             Z = log_sum_exp(wa, dim=0)  # line 7
-            # if (Z.data > 0.1).any():
-            #     pdb.set_trace()
 
             loss += Z  # line 8
             accumulated_weights = wa - Z  # line 9
@@ -260,30 +258,40 @@ class HMMInference(HMM):
 class HMM_VI(HMMInference):
     """
     This model fits the prior, generative model, and inference jointly
-    Note that it inherits significantly from the parent class
+    Note that it inherits significantly from the parent class,
+    BUT NOTE: self.T is *not* the same as before, it's pre-softmax here
+    (and in HMM_EM) since it needs to be in unconstrained space
     """
+
     def __init__(self, z_dim, x_dim, nhid, temp, temp_prior, *args, **kwargs):
         super(HMM_VI, self).__init__(z_dim, x_dim, nhid, temp, temp_prior, *args, **kwargs)
         self.T = nn.Parameter(self.T)
         self.pi = nn.Parameter(self.pi)
         self.emit = nn.Parameter(self.emit)
 
-    def decode(self, z, x):
+    def randomly_initialize(self, *args, **kwargs):
+        super(HMM_VI, self).randomly_initialize(*args, **kwargs)
+
+        # the parent's randomly initialize is in the probability space, need score
+        self.T = self.T.log()
+        self.pi = self.pi.log()
+        self.emit = self.emit.log()
+
+    def decode(self, z, x, emit):
         """
         Computes \log p(x | z); emit is [x_dim x z_dim], z is [batch_sz x z_dim]
         result is [batch_sz x x_dim]
         """
-        probs = torch.matmul(self.emit, z.unsqueeze(2)).squeeze()
+        probs = torch.matmul(emit, z.unsqueeze(2)).squeeze()
         return Categorical(probs=probs).log_prob(x)
 
     def log_marginal(self, input):
         return torch.Tensor([0])
 
     def forward(self, input, args, n_particles, test=False):
-        """
-        This version takes the inputs, and does not expose the logits, but instead
-        computes the losses directly
-        """
+        T = nn.Softmax(dim=0)(self.T)
+        pi = nn.Softmax(dim=0)(self.pi)
+        emit = nn.Softmax(dim=0)(self.emit)
 
         # run the input and teacher-forcing inputs through the embedding layers here
         seq_len, batch_sz = input.size()
@@ -301,7 +309,7 @@ class HMM_VI(HMMInference):
         accumulated_weights = -math.log(n_particles)  # will contain log w_{t - 1}
         resamples = 0
 
-        prior_probs = self.pi.unsqueeze(0).expand(batch_sz * n_particles, self.z_dim)
+        prior_probs = pi.unsqueeze(0).expand(batch_sz * n_particles, self.z_dim)
 
         for i in range(seq_len):
             h = self.z_decoder(hidden_states[i], h)
@@ -323,7 +331,7 @@ class HMM_VI(HMMInference):
                 p = RelaxedOneHotCategorical(temperature=self.temp_prior, probs=prior_probs)
 
             # now, compute the log-likelihood of the data given this z-sample
-            NLL = -self.decode(z, input[i].repeat(n_particles))  # diff. w.r.t. z
+            NLL = -self.decode(z, input[i].repeat(n_particles), emit)  # diff. w.r.t. z
             nlls[i] = NLL.data
 
             # compute the weight using `reweight` on page (4)
@@ -363,7 +371,7 @@ class HMM_VI(HMMInference):
                     accumulated_weights = -math.log(n_particles)  # will contain log w_{t - 1}
 
             if i != seq_len - 1:
-                prior_probs = torch.matmul(self.T, z.unsqueeze(2)).squeeze()
+                prior_probs = torch.matmul(T, z.unsqueeze(2)).squeeze()
 
         # now, we calculate the final log-marginal estimator
         nll = nlls.view(seq_len, n_particles, batch_sz).mean(1).sum()

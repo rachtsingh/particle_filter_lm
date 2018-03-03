@@ -6,6 +6,7 @@ import time
 import sys
 import numpy as np
 import torch
+from torch import nn
 import pdb  # noqa: F401
 
 from src.utils import get_sha
@@ -52,8 +53,7 @@ parser.add_argument('--no-cuda', action='store_true',
                     help='use CUDA')
 parser.add_argument('--log-interval', type=int, default=100, metavar='N',
                     help='report interval')
-randomhash = ''.join(str(time.time()).split('.'))
-parser.add_argument('--save', type=str,  default=randomhash+'.pt',
+parser.add_argument('--save', type=str,  default=None,
                     help='path to save the final model')
 parser.add_argument('--prof', type=str, default=None,
                     help='If specified, profile the first 10 batches and dump to <prof>')
@@ -63,6 +63,8 @@ parser.add_argument('--quiet', action='store_true',
                     help='Turn off printing except where enabled by another CLI flag')
 parser.add_argument('--print-best', action='store_true',
                     help='Print the best validation loss, along with log marginal')
+parser.add_argument('--dump-param-traj', type=str, default=None,
+                    help='A place to dump out the parameter trajectories as an npz')
 args = parser.parse_args()
 
 if not args.quiet:
@@ -130,6 +132,11 @@ if not args.quiet:
     print('model architecture:')
     print(model)
 
+if args.dump_param_traj:
+    T_traj = np.zeros((args.epochs, args.z_dim, args.z_dim))
+    pi_traj = np.zeros((args.epochs, args.z_dim))
+    emit_traj = np.zeros((args.epochs, args.z_dim, args.x_dim))
+
 # Loop over epochs.
 args.anneal = 0.01
 lr = args.lr
@@ -137,9 +144,24 @@ best_val_loss = 1e10
 true_marginal = 0
 stored_loss = 100000000
 
+
+def flush():
+    if args.save is not None:
+        if args.inference in ('vi', 'em'):
+            with open(args.save, 'w') as f:
+                T = nn.Softmax(dim=0)(model.T).data.numpy().T
+                pi = nn.Softmax(dim=0)(model.pi).data.numpy()
+                emit = nn.Softmax(dim=0)(model.emit).data.numpy().T
+                params = (T, pi, emit)
+                torch.save(params, f)
+                print('saved parameters to {}'.format(args.save))
+    if args.dump_param_traj is not None:
+        np.savez(args.dump_param_traj, T=T_traj, pi=pi_traj, emit=emit_traj)
+
+
 # At any point you can hit Ctrl + C to break out of training early.
 try:
-    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()
 
@@ -157,10 +179,18 @@ try:
             print('| end of epoch {:3d} | time: {:5.2f}s | valid ELBO {:5.2f} | true marginal {:5.2f}'
                   ''.format(epoch, (time.time() - epoch_start_time), val_loss, true_marginal))
             print('-' * 89)
-
+        if args.dump_param_traj:
+            T = nn.Softmax(dim=0)(model.T).data.numpy().T
+            pi = nn.Softmax(dim=0)(model.pi).data.numpy()
+            emit = nn.Softmax(dim=0)(model.emit).data.numpy().T
+            T_traj[epoch - 1] = T
+            pi_traj[epoch - 1] = pi
+            emit_traj[epoch - 1] = emit
+    flush()
 except KeyboardInterrupt:
     if not args.quiet:
         print('-' * 89)
         print('Exiting from training early')
+    flush()
 if args.print_best:
     print("{},{}".format(-best_val_loss, true_marginal))
