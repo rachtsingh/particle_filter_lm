@@ -157,7 +157,7 @@ class HMM_EM(nn.Module):
         for batch in data_source:
             if args.cuda:
                 batch = batch.cuda()
-            data = Variable(batch.t().contiguous())
+            data = Variable(batch.squeeze().t().contiguous())  # squeeze for 1 billion
             loss = self.forward(data)
             loss = loss.sum()
             total_loss += loss.detach().data
@@ -169,7 +169,7 @@ class HMM_EM(nn.Module):
         for batch in train_data:
             if args.cuda:
                 batch = batch.cuda()
-            data = Variable(batch.t().contiguous())
+            data = Variable(batch.squeeze().t().contiguous())  # squeeze for 1 billion
             optimizer.zero_grad()
             loss = self.forward(data)
             if any_nans(loss):

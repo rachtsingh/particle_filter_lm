@@ -185,7 +185,7 @@ class HMMInference(HMM):
         for batch in data_source:
             if args.cuda:
                 batch = batch.cuda()
-            data = Variable(batch.t().contiguous())
+            data = Variable(batch.squeeze().t().contiguous())  # squeeze for 1 billion
             elbo, _, _, resamples = self.forward(data, args, num_importance_samples, test=True)
             total_loss += elbo.detach().data
             total_resamples += resamples
@@ -213,7 +213,7 @@ class HMMInference(HMM):
             for batch in train_data:
                 if args.cuda:
                     batch = batch.cuda()
-                data = Variable(batch.t().contiguous())
+                data = Variable(batch.squeeze().t().contiguous())  # squeeze for 1 billion
                 if profile and batch_idx > 10:
                     print("breaking because profiling finished;")
                     break
