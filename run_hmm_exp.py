@@ -20,6 +20,8 @@ parser.add_argument('--dataset', type=str, default='1billion',
                     help='one of [generate, 1billion, <something>.pt, ...]')
 parser.add_argument('--inference', type=str, default='vi',
                     help='which inference method to use (vi, em)')
+parser.add_argument('--model', type=str, default='hmm',
+                    help='which generative model to use')
 parser.add_argument('--load-hmm', type=str,
                     help='which PyTorch file to load the HMM from, if any')
 parser.add_argument('--nhid', type=int, default=32,
@@ -28,6 +30,8 @@ parser.add_argument('--z-dim', type=int, default=5,
                     help='dimensionality of the hidden z')
 parser.add_argument('--x-dim', type=int, default=10,
                     help='dimensionality of the observed data')
+parser.add_argument('--hidden', type=int, default=10,
+                    help='dimensionality of hidden size in generative model, if any')
 parser.add_argument('--lr', type=float, default=0.01,
                     help='initial learning rate')
 parser.add_argument('--clip', type=float, default=3.0,
@@ -123,7 +127,10 @@ if args.inference == 'vi':
     model = hmm_filter.HMM_VI(z_dim=args.z_dim, x_dim=args.x_dim, nhid=args.nhid,
                               temp=args.temp, temp_prior=args.temp_prior, params=None)
 elif args.inference == 'em':
-    model = hmm.HMM_EM(args.z_dim, args.x_dim)
+    if args.model == 'hmm':
+        model = hmm.HMM_EM(args.z_dim, args.x_dim)
+    else:
+        model = hmm.HMM_EM_Gauss(args.z_dim, args.x_dim, args.hidden)
 
 if args.cuda and torch.cuda.is_available():
     model.cuda()
@@ -154,11 +161,7 @@ def flush():
     if args.save is not None:
         if args.inference in ('vi', 'em'):
             with open(args.save, 'w') as f:
-                T = nn.Softmax(dim=0)(model.T).data.cpu().numpy().T
-                pi = nn.Softmax(dim=0)(model.pi).data.cpu().numpy()
-                emit = nn.Softmax(dim=0)(model.emit).data.cpu().numpy().T
-                params = (T, pi, emit)
-                torch.save(params, f)
+                torch.save(model.state_dict(), f)
                 print('saved parameters to {}'.format(args.save))
     if args.dump_param_traj is not None:
         np.savez(args.dump_param_traj, T=T_traj, pi=pi_traj, emit=emit_traj)
@@ -166,7 +169,7 @@ def flush():
 
 # At any point you can hit Ctrl + C to break out of training early.
 try:
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()
 
@@ -180,10 +183,10 @@ try:
         if val_loss < best_val_loss:
             best_val_loss = val_loss
         if not args.quiet:
-            print('-' * 89)
+            print('-' * 80)
             print('| end of epoch {:3d} | time: {:5.2f}s | valid ELBO {:5.2f} | true marginal {:5.2f}'
                   ''.format(epoch, (time.time() - epoch_start_time), val_loss, true_marginal))
-            print('-' * 89)
+            print('-' * 80)
 
         if args.dump_param_traj:
             T = nn.Softmax(dim=0)(model.T).data.cpu().numpy().T

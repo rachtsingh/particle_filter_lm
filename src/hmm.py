@@ -7,8 +7,11 @@ import torch
 from torch.autograd import Variable
 import pdb  # noqa: F401
 from torch import nn
+from torch.nn import functional as F
 import numpy as np
 from utils import log_sum_exp, any_nans
+
+SMALL = 1e-16
 
 
 class HMM(nn.Module):
@@ -77,12 +80,21 @@ class HMM(nn.Module):
         assert max(marginals.var(0).abs() < 1e-6)
         return marginals[0].log()
 
+    def eval_log_marginal(self, input):
+        """
+        eval_log_marginal always takes the signature of input: Tensor -> Tensor
+        """
+        return self.log_marginal(input)
+
     def generate_data(self, N, T):
         # TODO (then we can drop the hmmlearn package except in tests)
         pass
 
 
 class HMM_EM(nn.Module):
+    """
+    This is a log-value optimized implementation of the HMM fit via EM, with a separated out observation model
+    """
     def __init__(self, z_dim, x_dim):
         super(HMM_EM, self).__init__()
         self.T = nn.Parameter(torch.Tensor(z_dim, z_dim))  # transition matrix -> each column is normalized
@@ -94,6 +106,14 @@ class HMM_EM(nn.Module):
 
         self.randomly_initialize()
 
+    # def log_prob(self, input):
+    #     """
+    #     Returns a [batch_size x z_dim] log-probability of input given state z
+    #     """
+    #     tmp = F.log_softmax(self.emit, 0)
+    #     return tmp[input]
+    #     # return F.embedding(input, tmp)
+    #
     def forward_backward(self, input):
         """
         input: Variable([seq_len x batch_size])
@@ -104,23 +124,29 @@ class HMM_EM(nn.Module):
         alpha = [None for i in range(seq_len)]
         beta = [None for i in range(seq_len)]
 
-        T = nn.Softmax(dim=0)(self.T)
-        pi = nn.Softmax(dim=0)(self.pi)
-        emit = nn.Softmax(dim=0)(self.emit)
+        T = F.log_softmax(self.T, 0)
+        pi = F.log_softmax(self.pi, 0)
+        emit = F.log_softmax(self.emit, 0)
 
         # forward pass
-        alpha[0] = emit[input[0]] * pi.view(1, -1)
-        beta[-1] = Variable(torch.ones(batch_size, self.z_dim))
+        # alpha[0] = self.log_prob(input[0]) + pi.view(1, -1)
+        alpha[0] = emit[input[0]] + pi.view(1, -1)
+        beta[-1] = Variable(torch.zeros(batch_size, self.z_dim))
+
         if T.is_cuda:
             beta[-1] = beta[-1].cuda()
 
         for t in range(1, seq_len):
-            alpha[t] = (emit[input[t]] * torch.mm(alpha[t - 1], T.t()))
+            mm_log_space = log_sum_exp(alpha[t - 1].unsqueeze(2).expand(-1, -1, self.z_dim) + T.unsqueeze(0), 1)
+            # alpha[t] = self.log_prob(input[t]) + mm_log_space
+            alpha[t] = emit[input[t]] + mm_log_space
 
         for t in range(seq_len - 2, -1, -1):
-            beta[t] = torch.mm((emit[input[t + 1]] * beta[t + 1]), T)
+            # prod = (self.log_prob(input[t + 1]) + beta[t + 1]).unsqueeze(2).expand(-1, -1, self.z_dim)
+            prod = (emit[input[t + 1]] + beta[t + 1]).unsqueeze(2).expand(-1, -1, self.z_dim)
+            beta[t] = log_sum_exp(prod + T.unsqueeze(0), 1)
 
-        log_marginal = log_sum_exp(alpha[0].log() + beta[0].log(), dim=-1)
+        log_marginal = log_sum_exp(alpha[-1] + beta[-1], dim=-1)
         return alpha, beta, log_marginal
 
     def randomly_initialize(self):
@@ -148,6 +174,9 @@ class HMM_EM(nn.Module):
         _, _, log_marginal = self.forward_backward(input)
         return log_marginal
 
+    def eval_log_marginal(self, input):
+        return self.log_marginal(Variable(input)).data
+
     def evaluate(self, data_source, args, num_samples=None):
         self.eval()
         total_loss = 0
@@ -169,11 +198,31 @@ class HMM_EM(nn.Module):
             data = Variable(batch.squeeze().t().contiguous())  # squeeze for 1 billion
             optimizer.zero_grad()
             loss = self.forward(data)
-            if any_nans(loss):
-                pdb.set_trace()
-            else:
-                loss = loss.sum()
+            loss = loss.sum()
             loss.backward()
             optimizer.step()
             total_loss += loss.detach()
         return total_loss.data[0], -1
+
+
+class HMM_EM_Layers(HMM_EM):
+    """
+    This model has a more thick observation model, so it can be more powerful
+    """
+
+    def __init__(self, z_dim, x_dim, hidden_size):
+        super(HMM_EM_Layers, self).__init__(z_dim, x_dim)
+
+        self.emit = nn.Parameter(torch.zeros(x_dim, hidden_size))
+        self.hidden = nn.Parameter(torch.zeros(hidden_size, z_dim))
+
+        # fix the random initialization
+        self.emit.data.uniform_(-0.01, 0.01)
+        self.hidden.data.uniform_(-0.01, 0.01)
+
+    def log_prob(self, input):
+        """
+        Returns a [batch_size x z_dim] log-probability of input given state z
+        """
+        emit = nn.Softmax(dim=0)(torch.mm(self.emit, self.hidden)).log()
+        return emit[input]
