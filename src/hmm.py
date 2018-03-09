@@ -78,6 +78,7 @@ class HMM(nn.Module):
         alpha, beta, _ = self.forward_backward(input)
         marginals = (alpha * beta).sum(-1)
         assert max(marginals.var(0).abs() < 1e-6)
+        print(marginals[0])
         return marginals[0].log()
 
     def eval_log_marginal(self, input):
@@ -124,29 +125,53 @@ class HMM_EM(nn.Module):
         alpha = [None for i in range(seq_len)]
         beta = [None for i in range(seq_len)]
 
-        T = F.log_softmax(self.T, 0)
-        pi = F.log_softmax(self.pi, 0)
-        emit = F.log_softmax(self.emit, 0)
+        alpha_other = [None for i in range(seq_len)]
+        beta_other = [None for i in range(seq_len)]
+
+        # T = F.log_softmax(self.T, 0)
+        # pi = F.log_softmax(self.pi, 0)
+        # emit = F.log_softmax(self.emit, 0)
+        T_other = nn.Softmax(0)(self.T)
+        pi_other = nn.Softmax(0)(self.pi)
+        emit_other = nn.Softmax(0)(self.emit)
+
+        T = T_other.log()
+        pi = pi_other.log()
+        emit = emit_other.log()
 
         # forward pass
         # alpha[0] = self.log_prob(input[0]) + pi.view(1, -1)
         alpha[0] = emit[input[0]] + pi.view(1, -1)
         beta[-1] = Variable(torch.zeros(batch_size, self.z_dim))
 
+        alpha_other[0] = emit_other[input[0]] * pi_other.view(1, -1)
+        beta_other[-1] = Variable(torch.ones(batch_size, self.z_dim))
+
         if T.is_cuda:
             beta[-1] = beta[-1].cuda()
+            beta_other[-1] = beta_other[-1].cuda()
 
         for t in range(1, seq_len):
-            mm_log_space = log_sum_exp(alpha[t - 1].unsqueeze(2).expand(-1, -1, self.z_dim) + T.unsqueeze(0), 1)
+            alpha_other[t] = (emit_other[input[t]] * torch.mm(alpha[t - 1].exp(), T_other.t()))
+
+            logprod = alpha[t - 1].unsqueeze(2).expand(batch_size, self.z_dim, self.z_dim) + T.t().unsqueeze(0)
             # alpha[t] = self.log_prob(input[t]) + mm_log_space
-            alpha[t] = emit[input[t]] + mm_log_space
+            alpha[t] = emit[input[t]] + log_sum_exp(logprod, 1)
 
-        for t in range(seq_len - 2, -1, -1):
-            # prod = (self.log_prob(input[t + 1]) + beta[t + 1]).unsqueeze(2).expand(-1, -1, self.z_dim)
-            prod = (emit[input[t + 1]] + beta[t + 1]).unsqueeze(2).expand(-1, -1, self.z_dim)
-            beta[t] = log_sum_exp(prod + T.unsqueeze(0), 1)
+            if (alpha[t] - alpha_other[t].log()).pow(2).max() > 1e-6:
+                pdb.set_trace()
 
+        # for t in range(seq_len - 2, -1, -1):
+        #     beta_expand = beta[t + 1].unsqueeze(1).expand(batch_size, self.z_dim, self.z_dim)
+        #     beta[t] = log_sum_exp(beta_expand + T.unsqueeze(0), 2) + emit[input[t + 1]]
+        #
+        log_marginal_other = log_sum_exp(alpha_other[-1].log() + beta_other[-1].log(), dim=-1)
         log_marginal = log_sum_exp(alpha[-1] + beta[-1], dim=-1)
+
+        # if any_nans(log_marginal):
+        #     pdb.set_trace()
+        # if (log_marginal_other - log_marginal).pow(2).max() > 1:
+        #     pdb.set_trace()
         return alpha, beta, log_marginal
 
     def randomly_initialize(self):
