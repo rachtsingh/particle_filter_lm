@@ -216,6 +216,7 @@ class DiscretePFLM(nn.Module):
 
     def train_epoch(self, corpus, train_data, criterion, optimizer, epoch, args, num_importance_samples):
         self.train()
+
         dataset_size = len(train_data.data())  # this will be approximate
 
         if epoch <= args.kl_anneal_delay:
@@ -238,6 +239,8 @@ class DiscretePFLM(nn.Module):
                     break
                 if epoch > args.kl_anneal_delay:
                     args.anneal = min(args.anneal + args.kl_anneal_rate, 1.)
+                if (batch_idx + 1) % 100 == 0:
+                    print(batch_idx + 1)
                 optimizer.zero_grad()
                 data, targets = batch.text, batch.target
                 elbo, NLL, tokens, resamples = self.forward(data, targets, args, num_importance_samples, criterion)
@@ -274,3 +277,92 @@ class DiscretePFLM(nn.Module):
                 _, _ = train_loop(True)
             prof.export_chrome_trace(args.prof)
             sys.exit(0)
+
+class DiscretePFLM1Billion(DiscretePFLM):
+    def evaluate(self, data_source, args, num_samples=3):
+        self.eval()
+        total_loss = 0
+        total_nll = 0
+        total_tokens = 0
+        total_resamples = 0
+        batch_idx = 0
+
+        for batch in tqdm(data_source):
+            pdb.set_trace()
+            elbo, NLL, tokens, resamples = self.forward(data, targets, args, num_samples, criterion, test=True)
+            total_loss += elbo.detach().data
+            total_nll += NLL
+            total_tokens += tokens
+            total_resamples += resamples
+            batch_idx += 1
+
+        print("eval: {:.3f} NLL | current anneal: {:.3f} | average resamples: {:.1f}"
+              "".format(total_nll / total_loss[0], total_resamples/batch_idx))
+
+        # duplicate total_loss because we don't have a separate ELBO loss here, though we can grab it
+        return total_loss[0] / total_tokens, total_loss[0] / total_tokens
+
+    def train_epoch(self, corpus, train_data, criterion, optimizer, epoch, args, num_importance_samples):
+        self.train()
+
+        dataset_size = len(train_data.data())  # this will be approximate
+
+        if epoch <= args.kl_anneal_delay:
+            num_importance_samples = 2   # less need for a filter if you're just pretraining the generation net
+
+        def train_loop(profile=False):
+            total_loss = 0
+            total_tokens = 0
+            total_resamples = 0
+            batch_idx = 0
+
+            # for pretty printing the loss in each chunk
+            last_chunk_loss = 0
+            last_chunk_tokens = 0
+            last_chunk_resamples = 0
+
+            for batch in tqdm(train_data):
+                if profile and batch_idx > 10:
+                    print("breaking because profiling finished;")
+                    break
+                if epoch > args.kl_anneal_delay:
+                    args.anneal = min(args.anneal + args.kl_anneal_rate, 1.)
+                if (batch_idx + 1) % 100 == 0:
+                    print(batch_idx + 1)
+                optimizer.zero_grad()
+                data, targets = batch.text, batch.target
+                elbo, NLL, tokens, resamples = self.forward(data, targets, args, num_importance_samples, criterion)
+                loss = elbo/tokens
+                loss.backward()
+                torch.nn.utils.clip_grad_norm(self.parameters(), args.clip)
+                optimizer.step()
+
+                total_loss += elbo.detach()
+                total_tokens += tokens
+                total_resamples += resamples
+
+                # print if necessary
+                if batch_idx % args.log_interval == 0 and batch_idx > 0:
+                    chunk_loss = total_loss.data[0] - last_chunk_loss
+                    chunk_tokens = total_tokens - last_chunk_tokens
+                    chunk_resamples = (total_resamples - last_chunk_resamples) / args.log_interval
+                    print(total_resamples)
+                    print_in_epoch_summary(epoch, batch_idx, args.batch_size, dataset_size,
+                                           loss.data[0], NLL / tokens,
+                                           {'Chunk Loss': chunk_loss / chunk_tokens, 'resamples': chunk_resamples},
+                                           tokens, "anneal={:.2f}".format(args.anneal))
+                    last_chunk_loss = total_loss.data[0]
+                    last_chunk_tokens = total_tokens
+                    last_chunk_resamples = total_resamples
+                batch_idx += 1  # because no cheap generator smh
+            return total_loss.data[0], total_tokens
+
+        if args.prof is None:
+            total_loss, total_tokens = train_loop(False)
+            return total_loss / total_tokens, -1
+        else:
+            with torch.autograd.profiler.profile() as prof:
+                _, _ = train_loop(True)
+            prof.export_chrome_trace(args.prof)
+            sys.exit(0)
+

@@ -1,6 +1,6 @@
 """
 For sake of time, I've copied a bunch of code from HMM to HMM_EM;
-TODO: mv HMM_EM -> HMM, and add some Variable calls around to patch things up
+kODO: mv HMM_EM -> HMM, and add some Variable calls around to patch things up
 """
 
 import torch
@@ -107,14 +107,16 @@ class HMM_EM(nn.Module):
 
         self.randomly_initialize()
 
-    # def log_prob(self, input):
-    #     """
-    #     Returns a [batch_size x z_dim] log-probability of input given state z
-    #     """
-    #     tmp = F.log_softmax(self.emit, 0)
-    #     return tmp[input]
-    #     # return F.embedding(input, tmp)
-    #
+    def log_prob(self, input, precompute=None):
+        """
+        Returns a [batch_size x z_dim] log-probability of input given state z
+        """
+        emit_prob, = precompute
+        return F.embedding(input, emit_prob)
+
+    def calc_emit(self):
+        return F.log_softmax(self.emit, 0)
+
     def forward_backward(self, input):
         """
         input: Variable([seq_len x batch_size])
@@ -127,11 +129,10 @@ class HMM_EM(nn.Module):
 
         T = F.log_softmax(self.T, 0)
         pi = F.log_softmax(self.pi, 0)
-        emit = F.log_softmax(self.emit, 0)
+        emit = self.calc_emit()
 
         # forward pass
-        # alpha[0] = self.log_prob(input[0]) + pi.view(1, -1)
-        alpha[0] = emit[input[0]] + pi.view(1, -1)
+        alpha[0] = self.log_prob(input[0], (emit,)) + pi.view(1, -1)
         beta[-1] = Variable(torch.zeros(batch_size, self.z_dim))
 
         if T.is_cuda:
@@ -139,8 +140,7 @@ class HMM_EM(nn.Module):
 
         for t in range(1, seq_len):
             logprod = alpha[t - 1].unsqueeze(2).expand(batch_size, self.z_dim, self.z_dim) + T.t().unsqueeze(0)
-            # alpha[t] = self.log_prob(input[t]) + mm_log_space
-            alpha[t] = emit[input[t]] + log_sum_exp(logprod, 1)
+            alpha[t] = self.log_prob(input[t], (emit,)) + log_sum_exp(logprod, 1)
 
         # keep around for now, but unnecessary in our models
         # for t in range(seq_len - 2, -1, -1):
@@ -149,10 +149,6 @@ class HMM_EM(nn.Module):
 
         log_marginal = log_sum_exp(alpha[-1] + beta[-1], dim=-1)
 
-        # if any_nans(log_marginal):
-        #     pdb.set_trace()
-        # if (log_marginal_other - log_marginal).pow(2).max() > 1:
-        #     pdb.set_trace()
         return alpha, beta, log_marginal
 
     def randomly_initialize(self):
@@ -186,22 +182,28 @@ class HMM_EM(nn.Module):
     def evaluate(self, data_source, args, num_samples=None):
         self.eval()
         total_loss = 0
+        total_tokens = 0
         for batch in data_source:
             if args.cuda:
                 batch = batch.cuda()
-            data = Variable(batch.squeeze().t().contiguous())  # squeeze for 1 billion
+            data = Variable(batch.squeeze(0).t().contiguous())  # squeeze for 1 billion
+            total_tokens += (data.size()[0] * data.size()[1])
             loss = self.forward(data)
             loss = loss.sum()
             total_loss += loss.detach().data
-        return total_loss[0], total_loss[0]
+        return total_loss[0] / float(total_tokens), total_loss[0] / float(total_tokens)
 
     def train_epoch(self, train_data, optimizer, epoch, args, num_samples=None):
         self.train()
         total_loss = 0
-        for batch in train_data:
+        print(len(train_data))
+
+        for i, batch in enumerate(train_data):
+            if (i + 1) % 100 == 0:
+                print(i + 1)
             if args.cuda:
                 batch = batch.cuda()
-            data = Variable(batch.squeeze().t().contiguous())  # squeeze for 1 billion
+            data = Variable(batch.squeeze(0).t().contiguous())  # squeeze for 1 billion
             optimizer.zero_grad()
             loss = self.forward(data)
             loss = loss.sum()
@@ -226,9 +228,5 @@ class HMM_EM_Layers(HMM_EM):
         self.emit.data.uniform_(-0.01, 0.01)
         self.hidden.data.uniform_(-0.01, 0.01)
 
-    def log_prob(self, input):
-        """
-        Returns a [batch_size x z_dim] log-probability of input given state z
-        """
-        emit = nn.Softmax(dim=0)(torch.mm(self.emit, self.hidden)).log()
-        return emit[input]
+    def calc_emit(self):
+        return F.log_softmax(torch.mm(self.emit, self.hidden), 0)

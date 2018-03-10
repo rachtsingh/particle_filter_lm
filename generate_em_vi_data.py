@@ -19,8 +19,8 @@ args = parser.parse_args()
 
 
 def generate_hmm_data(N, N_val, x_dim, z_dim):
-    params, train_data = create_hmm_data(N, seq_len=20, x_dim=x_dim, z_dim=z_dim, params=None)
-    _, val_data = create_hmm_data(N_val, seq_len=15, x_dim=x_dim, z_dim=z_dim, params=params)
+    params, train_data = create_hmm_data(N, seq_len=10, x_dim=x_dim, z_dim=z_dim, params=None)
+    _, val_data = create_hmm_data(N_val, seq_len=5, x_dim=x_dim, z_dim=z_dim, params=params)
     return train_data, val_data, params
 
 

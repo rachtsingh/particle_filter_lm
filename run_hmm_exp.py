@@ -130,7 +130,7 @@ elif args.inference == 'em':
     if args.model == 'hmm':
         model = hmm.HMM_EM(args.z_dim, args.x_dim)
     else:
-        model = hmm.HMM_EM_Gauss(args.z_dim, args.x_dim, args.hidden)
+        model = hmm.HMM_EM_Layers(args.z_dim, args.x_dim, args.hidden)
 
 if args.cuda and torch.cuda.is_available():
     model.cuda()
@@ -183,9 +183,14 @@ try:
         if val_loss < best_val_loss:
             best_val_loss = val_loss
         if not args.quiet:
+            if val_loss < 10:
+                ppl = np.exp(val_loss)
+            else:
+                ppl = np.inf
+
             print('-' * 80)
-            print('| end of epoch {:3d} | time: {:5.2f}s | valid ELBO {:5.2f} | true marginal {:5.2f}'
-                  ''.format(epoch, (time.time() - epoch_start_time), val_loss, true_marginal))
+            print('| end of epoch {:3d} | time: {:5.2f}s | valid ELBO {:5.2f} | true marginal {:5.2f} | PPL: {:5.2f}'
+                  ''.format(epoch, (time.time() - epoch_start_time), val_loss, true_marginal, ppl))
             print('-' * 80)
 
         if args.dump_param_traj:
