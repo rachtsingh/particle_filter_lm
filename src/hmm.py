@@ -115,6 +115,9 @@ class HMM_EM(nn.Module):
         return F.embedding(input, emit_prob)
 
     def calc_emit(self):
+        """
+        Amortize calculation of the emisssion
+        """
         return F.log_softmax(self.emit, 0)
 
     def forward_backward(self, input):
@@ -191,6 +194,11 @@ class HMM_EM(nn.Module):
             loss = self.forward(data)
             loss = loss.sum()
             total_loss += loss.detach().data
+
+        if args.dataset != '1billion':
+            total_tokens = 1
+
+        pdb.set_trace()
         return total_loss[0] / float(total_tokens), total_loss[0] / float(total_tokens)
 
     def train_epoch(self, train_data, optimizer, epoch, args, num_samples=None):

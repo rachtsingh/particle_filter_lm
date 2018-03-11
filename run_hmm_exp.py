@@ -20,10 +20,12 @@ parser.add_argument('--dataset', type=str, default='1billion',
                     help='one of [generate, 1billion, <something>.pt, ...]')
 parser.add_argument('--inference', type=str, default='vi',
                     help='which inference method to use (vi, em)')
-parser.add_argument('--model', type=str, default='hmm',
-                    help='which generative model to use')
+parser.add_argument('--model', type=str, default='hmm_em',
+                    help='which generative model to use (hmm_vi, hmm_em, hmm_deep_em)')
 parser.add_argument('--load-hmm', type=str,
                     help='which PyTorch file to load the HMM from, if any')
+parser.add_argument('--word-dim', type=int, default=300,
+                    help='dimensionality of the word embedding for 1billion')
 parser.add_argument('--nhid', type=int, default=32,
                     help='number of hidden units per layer')
 parser.add_argument('--z-dim', type=int, default=5,
@@ -124,12 +126,16 @@ val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size,
 params = None
 # build the model using the true parameters of the generative model
 if args.inference == 'vi':
-    model = hmm_filter.HMM_VI(z_dim=args.z_dim, x_dim=args.x_dim, nhid=args.nhid,
-                              temp=args.temp, temp_prior=args.temp_prior, params=None)
+    if args.model == 'hmm_vi':
+        model = hmm_filter.HMM_VI(z_dim=args.z_dim, x_dim=args.x_dim, nhid=args.nhid, word_dim=args.word_dim,
+                                  temp=args.temp, temp_prior=args.temp_prior, params=None)
+    elif args.model == 'hmm_deep_vi':
+        model = hmm_filter.HMM_VI_Layers(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
+                                         word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
 elif args.inference == 'em':
-    if args.model == 'hmm':
+    if args.model == 'hmm_em':
         model = hmm.HMM_EM(args.z_dim, args.x_dim)
-    else:
+    elif args.model == 'hmm_deep_em':
         model = hmm.HMM_EM_Layers(args.z_dim, args.x_dim, args.hidden)
 
 if args.cuda and torch.cuda.is_available():
@@ -184,7 +190,7 @@ try:
             best_val_loss = val_loss
         if not args.quiet:
             if val_loss < 10:
-                ppl = np.exp(val_loss)
+                ppl = np.exp(-true_marginal)
             else:
                 ppl = np.inf
 
@@ -194,6 +200,7 @@ try:
             print('-' * 80)
 
         if args.dump_param_traj:
+            # TODO: update this for new eval_log_marginal / model loading
             T = nn.Softmax(dim=0)(model.T).data.cpu().numpy().T
             pi = nn.Softmax(dim=0)(model.pi).data.cpu().numpy()
             emit = nn.Softmax(dim=0)(model.emit).data.cpu().numpy().T

@@ -1,15 +1,9 @@
-from subprocess import check_output
-import numpy as np
+import subprocess
 import pdb
 
-values = np.zeros((3, 3))
-true_marginal = 0
+for temp_prior in [0.3, 0.4, 0.5]:
+    for temp in [0.4, 0.5, 0.6, 0.8, 0.9]:
+        with open("{}_{}.log".format(temp_prior, temp), 'w') as f:
+            subprocess.call("python run_hmm_exp.py --inference vi --dataset 1billion --x-dim 20004 --lr 0.03 --batch_size 1 --model hmm_deep_vi --z-dim 100 --temp {} --temp_prior {} --hidden 150 --num-importance-samples 15 --nhid 128 --epochs 1".format(temp, temp_prior, temp_prior, temp).split(' '), stdout=f, stderr=subprocess.STDOUT)
 
-for i, z_dim in enumerate([150]):
-    for j, n_particles in enumerate([5, 25, 50]):
-        out = check_output("python run_hmm_exp.py --epochs 20 --nhid 32 --batch_size 10 --quiet --print-best --temp 0.8 --temp_prior 0.5 --z-dim {} --num-importance-samples {} --x-dim 100".format(z_dim, n_particles).split(' '))
-        v, true_marginal = map(float, out.split(","))
-        values[i][j] = v
-        print(z_dim, n_particles, v, true_marginal)
-# np.save('real_data_wo_filter.npy', values)
 pdb.set_trace()

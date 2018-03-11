@@ -5,6 +5,13 @@ import numpy as np
 import pdb  # noqa: F401
 
 
+def show_memusage(device=0):
+    import gpustat
+    gpu_stats = gpustat.GPUStatCollection.new_query()
+    item = gpu_stats.jsonify()["gpus"][device]
+    print("{}/{}".format(item["memory.used"], item["memory.total"]))
+
+
 def get_sha():
     return subprocess.check_output(['git', 'rev-parse', 'HEAD'])
 
