@@ -64,6 +64,12 @@ class HMMInference(HMM_EM):
         self.pi = nn.Parameter(self.pi.data, requires_grad=False)
         self.emit = nn.Parameter(self.emit.data, requires_grad=False)
 
+    def load_embedding(self, embedding):
+        x_dim, word_dim = embedding.size()
+        if x_dim != self.x_dim or word_dim != self.word_dim:
+            raise ValueError("embedding has size: {} when expected: ({}, {})".format(embedding.size(), self.x_dim, self.word_dim))
+        self.inp_embedding.weight.data = embedding
+
     def randomly_initialize(self):
         T = np.random.random(size=(self.z_dim, self.z_dim))
         T = T/T.sum(axis=1).reshape((self.z_dim, 1))
@@ -108,6 +114,9 @@ class HMMInference(HMM_EM):
         return F.log_softmax(self.emit, 0)
 
     def forward(self, input, args, n_particles, test=False):
+        pdb.set_trace()
+        print(self.T.data.mean(), self.emit.data.mean(), self.pi.data.mean())
+
         T = nn.Softmax(dim=0)(self.T)  # NOTE: not in log-space
         pi = F.log_softmax(self.pi, 0)
         emit = self.calc_emit()
@@ -302,10 +311,12 @@ class HMM_VI(HMMInference):
 
 class HMM_VI_Layers(HMM_VI):
     def __init__(self, z_dim, x_dim, hidden_size, nhid, word_dim, temp, temp_prior, params=None, *args, **kwargs):
-        super(HMM_VI, self).__init__(z_dim, x_dim, nhid, word_dim, temp, temp_prior, params, *args, **kwargs)
+        super(HMM_VI_Layers, self).__init__(z_dim, x_dim, nhid, word_dim, temp, temp_prior, params, *args, **kwargs)
 
         self.emit = nn.Parameter(torch.zeros(x_dim, hidden_size))
         self.hidden = nn.Parameter(torch.zeros(hidden_size, z_dim))
+
+        self.hidden_size = hidden_size
 
         # fix the random initialization
         self.emit.data.uniform_(-0.01, 0.01)
@@ -313,3 +324,10 @@ class HMM_VI_Layers(HMM_VI):
 
     def calc_emit(self):
         return F.log_softmax(torch.mm(self.emit, self.hidden), 0)
+
+    def load_embedding(self, embedding):
+        super(HMM_VI_Layers, self).load_embedding(embedding)
+
+        if self.hidden_size == self.word_dim:
+            print("can load word embeddings on decoder side, tying weights")
+            self.emit.data = embedding

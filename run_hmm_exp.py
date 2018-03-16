@@ -72,6 +72,8 @@ parser.add_argument('--print-best', action='store_true',
                     help='Print the best validation loss, along with log marginal')
 parser.add_argument('--dump-param-traj', type=str, default=None,
                     help='A place to dump out the parameter trajectories as an npz')
+parser.add_argument('--embedding', type=str, default=None,
+                    help='Which file to load word embeddings from')
 args = parser.parse_args()
 
 if not args.quiet:
@@ -137,6 +139,10 @@ elif args.inference == 'em':
         model = hmm.HMM_EM(args.z_dim, args.x_dim)
     elif args.model == 'hmm_deep_em':
         model = hmm.HMM_EM_Layers(args.z_dim, args.x_dim, args.hidden)
+
+if args.embedding is not None and model.load_embedding:
+    data = torch.load(args.embedding)
+    model.load_embedding(data)
 
 if args.cuda and torch.cuda.is_available():
     model.cuda()
