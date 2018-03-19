@@ -12,10 +12,10 @@ import sys
 import pdb  # noqa: F401
 import gc
 
-from utils import print_in_epoch_summary, log_sum_exp, any_nans  # noqa: F401
-from locked_dropout import LockedDropout  # noqa: F401
-from embed_regularize import embedded_dropout  # noqa: F401
-from hmm import HMM_EM
+from src.utils import print_in_epoch_summary, log_sum_exp, any_nans  # noqa: F401
+from src.locked_dropout import LockedDropout  # noqa: F401
+from src.embed_regularize import embedded_dropout  # noqa: F401
+from src.hmm import HMM_EM
 from src.utils import show_memusage  # noqa: F401
 
 LOG_2PI = math.log(2 * math.pi)
@@ -43,8 +43,10 @@ class HMMInference(HMM_EM):
         self.enc = nn.ModuleList([self.inp_embedding, self.encoder])
 
         # latent stuff
-        # self.z_decoder = nn.GRUCell(2 * nhid, z_dim)  # This is the autoregressive q(z)
-        self.logits = nn.Linear(z_dim + 2 * nhid, z_dim)
+        self.z_decoder = nn.GRUCell(2 * nhid, z_dim)  # This is the autoregressive q(z)
+        self.logits = nn.Linear(z_dim, z_dim)
+        
+        # self.logits = nn.Linear(z_dim + 2 * nhid, z_dim)
         self.temp = Variable(torch.Tensor([temp]))
         self.temp_prior = Variable(torch.Tensor([temp_prior]))
 
@@ -114,11 +116,8 @@ class HMMInference(HMM_EM):
         return F.log_softmax(self.emit, 0)
 
     def forward(self, input, args, n_particles, test=False):
-        pdb.set_trace()
-        print(self.T.data.mean(), self.emit.data.mean(), self.pi.data.mean())
-
-        T = nn.Softmax(dim=0)(self.T)  # NOTE: not in log-space
-        pi = F.log_softmax(self.pi, 0)
+        T = F.log_softmax(self.T, 0)  # NOTE: in log-space
+        pi = F.log_softmax(self.pi, 0) # NOTE: in log-space
         emit = self.calc_emit()
 
         # run the input and teacher-forcing inputs through the embedding layers here
@@ -137,13 +136,18 @@ class HMMInference(HMM_EM):
         accumulated_weights = -math.log(n_particles)  # will contain log w_{t - 1}
         resamples = 0
 
-        # now a log-prob
+        # in probability space
         prior_probs = pi.unsqueeze(0).expand(batch_sz * n_particles, self.z_dim)
 
+        logits = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)
+
         for i in range(seq_len):
-            logits = self.logits(torch.cat([hidden_states[i], h], 1))
+            # logits = self.logits(torch.cat([hidden_states[i], h], 1))
+            logits = self.logits(nn.functional.relu(self.z_decoder(hidden_states[i], logits)))
 
             # build the next z sample
+            if any_nans(logits):
+                pdb.set_trace()
             if test:
                 q = OneHotCategorical(logits=logits)
                 z = q.sample()
@@ -153,10 +157,17 @@ class HMMInference(HMM_EM):
             h = z
 
             # prior
+            if any_nans(prior_probs):
+                pdb.set_trace()
             if test:
                 p = OneHotCategorical(logits=prior_probs)
             else:
                 p = RelaxedOneHotCategorical(temperature=self.temp_prior, logits=prior_probs)
+
+            if any_nans(prior_probs):
+                pdb.set_trace()
+            if any_nans(logits):
+                pdb.set_trace()
 
             # now, compute the log-likelihood of the data given this z-sample
             NLL = -self.decode(z, input[i].repeat(n_particles), (emit,))  # diff. w.r.t. z
@@ -201,7 +212,18 @@ class HMMInference(HMM_EM):
                     accumulated_weights = -math.log(n_particles)  # will contain log w_{t - 1}
 
             if i != seq_len - 1:
-                prior_probs = (T.unsqueeze(0) * z.unsqueeze(1)).sum(2)
+                # now in probability space
+                prior_probs = log_sum_exp(T.unsqueeze(0) + z.unsqueeze(1), 2)
+
+                # let's normalize things - slower, but safer
+                # prior_probs += 0.01
+                # prior_probs = prior_probs / prior_probs.sum(1, keepdim=True)
+            
+            # # if ((prior_probs.sum(1) - 1) > 1e-3).any().item():
+            #     pdb.set_trace()
+
+        if any_nans(loss):
+            pdb.set_trace()
 
         # now, we calculate the final log-marginal estimator
         nll = nlls.view(seq_len, n_particles, batch_sz).mean(1).sum()
@@ -233,7 +255,7 @@ class HMMInference(HMM_EM):
             total_tokens = 1
         args.anneal = old_anneal
 
-        return total_loss[0] / total_tokens, total_log_marginal / total_tokens
+        return total_loss.item() / total_tokens, total_log_marginal / total_tokens
 
     def train_epoch(self, train_data, optimizer, epoch, args, num_importance_samples):
         self.train()
@@ -251,6 +273,8 @@ class HMMInference(HMM_EM):
             last_chunk_resamples = 0
 
             for i, batch in enumerate(train_data):
+                if i > 1000:
+                    break
                 if args.cuda:
                     batch = batch.cuda()
                 data = Variable(batch.squeeze(0).t().contiguous())  # squeeze for 1 billion
@@ -263,10 +287,10 @@ class HMMInference(HMM_EM):
                 elbo, NLL, tokens, resamples = self.forward(data, args, num_importance_samples)
                 loss = elbo/tokens
                 loss.backward()
-                # torch.nn.utils.clip_grad_norm(self.parameters(), args.clip)
+                # torch.nn.utils.clip_grad_norm(self.parameters(), 0.01)
                 optimizer.step()
 
-                total_loss += elbo.detach().data[0]
+                total_loss += elbo.detach().data.item()
                 total_tokens += tokens
                 total_resamples += resamples
 
@@ -276,7 +300,7 @@ class HMMInference(HMM_EM):
                     chunk_tokens = total_tokens - last_chunk_tokens
                     chunk_resamples = (total_resamples - last_chunk_resamples) / args.log_interval
                     print_in_epoch_summary(epoch, batch_idx, args.batch_size, dataset_size,
-                                           loss.data[0], NLL / tokens,
+                                           loss.data.item(), NLL / (tokens / num_importance_samples),
                                            {'Chunk Loss': chunk_loss / chunk_tokens, 'resamples': chunk_resamples},
                                            tokens, "anneal={:.2f}".format(args.anneal))
                     last_chunk_loss = total_loss
@@ -327,7 +351,111 @@ class HMM_VI_Layers(HMM_VI):
 
     def load_embedding(self, embedding):
         super(HMM_VI_Layers, self).load_embedding(embedding)
+        self.inp_embedding.weight.data[:4] = torch.randn(4, self.word_dim)
 
         if self.hidden_size == self.word_dim:
             print("can load word embeddings on decoder side, tying weights")
-            self.emit.data = embedding
+            self.emit.data = self.inp_embedding.weight.data
+
+class HMM_VI_Marginalized(HMM_VI_Layers):
+    """
+    This version of the model marginalizes the loss at each step instead of relying on a sample - which is much worse
+    The math isn't worked out yet (no guarantee that this is a proper lower bound), but it should be better at least
+    """
+    
+    def forward(self, input, args, n_particles, test=False):
+        T = nn.Softmax(dim=0)(self.T)  # NOTE: not in log-space
+        pi = nn.Softmax(dim=0)(self.pi)
+        emit = self.calc_emit()
+
+        # run the input and teacher-forcing inputs through the embedding layers here
+        seq_len, batch_sz = input.size()
+        emb = self.inp_embedding(input)
+        hidden = self.init_hidden(batch_sz, self.nhid, 2)  # bidirectional
+        hidden_states, (_, _) = self.encoder(emb, hidden)
+        hidden_states = hidden_states.repeat(1, n_particles, 1)
+
+        # run the z-decoder at this point, evaluating the NLL at each step
+        h = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)
+
+        nlls = hidden_states.data.new(seq_len, batch_sz * n_particles)
+        loss = 0
+
+        accumulated_weights = -math.log(n_particles)  # will contain log w_{t - 1}
+        resamples = 0
+
+        # now a log-prob
+        prior_probs = pi.unsqueeze(0).expand(batch_sz * n_particles, self.z_dim)
+
+        logits = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)
+
+        for i in range(seq_len):
+            # logits = self.logits(torch.cat([hidden_states[i], h], 1))
+            logits = self.logits(nn.functional.relu(self.z_decoder(hidden_states[i], logits)))
+
+            # build the next z sample
+            if test:
+                q = OneHotCategorical(logits=logits)
+                z = q.sample()
+            else:
+                q = RelaxedOneHotCategorical(temperature=self.temp, logits=logits)
+                z = q.rsample()
+
+            # we still need the sample
+            h = z
+
+            # prior
+            if test:
+                p = OneHotCategorical(probs=prior_probs)
+            else:
+                p = RelaxedOneHotCategorical(temperature=self.temp_prior, probs=prior_probs)
+
+            lse = log_sum_exp(logits, dim=1).view(-1, 1)
+            log_probs = logits - lse
+
+            # let's fuck this up
+            # now, compute the log-likelihood of the data given this z-sample
+            # so emission is [batch_sz x z_dim], i.e. emission[i, j] is the log-probability of getting this 
+            # data for element i given choice z
+            emission = F.embedding(input[i].repeat(n_particles), emit)
+
+            NLL = -log_sum_exp(emission + log_probs, 1)
+            nlls[i] = NLL.data
+            KL = (log_probs.exp() * (log_probs - (prior_probs + 1e-16).log())).sum(1)
+            loss += (NLL + KL)
+
+            if i != seq_len - 1:
+                prior_probs = (T.unsqueeze(0) * z.unsqueeze(1)).sum(2)
+
+        # now, we calculate the final log-marginal estimator
+        nll = nlls.view(seq_len, n_particles, batch_sz).mean(1).sum()
+        return loss.sum(), nll, (seq_len * batch_sz), resamples
+   
+    # we need to fix evaluate to use the pfilter evaluation
+    def evaluate(self, data_source, args, num_importance_samples=3):
+        self.eval()
+        old_anneal = args.anneal  # save to replace after evaluation
+        args.anneal = 1.
+        total_loss = 0
+        total_log_marginal = 0
+        total_resamples = 0
+        batch_idx = 0
+        total_tokens = 0
+
+        for batch in data_source:
+            if args.cuda:
+                batch = batch.cuda()
+            batch = batch.squeeze(0).t().contiguous()
+            data = Variable(batch)  # squeeze for 1 billion
+            elbo, _, _, resamples = super(HMM_VI_Marginalized, self).forward(data, args, num_importance_samples, test=True)
+            total_log_marginal += self.eval_log_marginal(batch).sum()
+            total_loss += elbo.detach().data
+            total_tokens += (data.size()[0] * data.size()[1])
+            total_resamples += resamples
+            batch_idx += 1
+
+        if args.dataset != '1billion':
+            total_tokens = 1
+        args.anneal = old_anneal
+
+        return total_loss.item() / total_tokens, total_log_marginal / total_tokens

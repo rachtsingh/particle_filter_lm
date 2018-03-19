@@ -1,10 +1,10 @@
 import torch
 from torch.utils import data
 import numpy as np
-from hmmlearn.hmm import MultinomialHMM
 
 
 def create_hmm_data(N, seq_len, x_dim, z_dim, params=None):
+    from hmmlearn.hmm import MultinomialHMM  # introduces a lot of dependencies
     hmm = MultinomialHMM(n_components=z_dim)
 
     if params is None:

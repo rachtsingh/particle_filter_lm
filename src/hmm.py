@@ -9,12 +9,15 @@ import pdb  # noqa: F401
 from torch import nn
 from torch.nn import functional as F
 import numpy as np
-from utils import log_sum_exp, any_nans
+from src.utils import log_sum_exp, any_nans
 
 SMALL = 1e-16
 
 
 class HMM(nn.Module):
+    """
+    DEPRECATED
+    """
     def __init__(self, z_dim, x_dim, params=None):
         super(HMM, self).__init__()
         self.T = torch.Tensor(z_dim, z_dim)  # transition matrix -> each column is normalized
@@ -107,6 +110,14 @@ class HMM_EM(nn.Module):
 
         self.randomly_initialize()
 
+    def set_params(self, params):
+        T, pi, emit, hidden = params
+        self.T.data = T
+        self.pi.data = pi
+        self.emit.data = emit
+        if hidden is not None:
+            self.hidden.data = hidden
+
     def log_prob(self, input, precompute=None):
         """
         Returns a [batch_size x z_dim] log-probability of input given state z
@@ -198,8 +209,7 @@ class HMM_EM(nn.Module):
         if args.dataset != '1billion':
             total_tokens = 1
 
-        pdb.set_trace()
-        return total_loss[0] / float(total_tokens), total_loss[0] / float(total_tokens)
+        return total_loss[0] / float(total_tokens), -total_loss[0] / float(total_tokens)
 
     def train_epoch(self, train_data, optimizer, epoch, args, num_samples=None):
         self.train()
@@ -232,9 +242,18 @@ class HMM_EM_Layers(HMM_EM):
         self.emit = nn.Parameter(torch.zeros(x_dim, hidden_size))
         self.hidden = nn.Parameter(torch.zeros(hidden_size, z_dim))
 
+        self.hidden_size = hidden_size
+
         # fix the random initialization
         self.emit.data.uniform_(-0.01, 0.01)
         self.hidden.data.uniform_(-0.01, 0.01)
 
     def calc_emit(self):
         return F.log_softmax(torch.mm(self.emit, self.hidden), 0)
+    
+    def load_embedding(self, embedding):
+        x_dim, word_dim = embedding.size()
+        if x_dim != self.x_dim or word_dim != self.hidden_size:
+            raise ValueError("embedding has size: {} when expected: ({}, {})".format(embedding.size(), self.x_dim, self.hidden_size))
+        self.emit.data = embedding
+        self.emit.data[:4] = torch.randn(4, self.hidden_size)
