@@ -1,5 +1,7 @@
 """
-Comparison of EM and VI
+These models are not HMMs, so there's no way to do EM here, only VI
+
+The idea is that this is for bootstrapping inference on VI-based models
 """
 import argparse
 import time
@@ -13,23 +15,25 @@ import pdb  # noqa: F401
 from src.utils import get_sha
 from src.hmm_dataset import create_hmm_data, HMMData
 from src.real_hmm_dataset import OneBillionWord
-from src import hmm_filter
+from src import hmm_filter, vi_filter
 from src import hmm
 
 parser = argparse.ArgumentParser(description='Demonstration of Sequential Latent VI for HMMs')
 parser.add_argument('--dataset', type=str, default='1billion',
                     help='one of [generate, 1billion, <something>.pt, ...]')
-parser.add_argument('--inference', type=str, default='vi',
-                    help='which inference method to use (vi, em)')
-parser.add_argument('--model', type=str, default='hmm_em',
-                    help='which generative model to use (hmm_vi, hmm_em, hmm_deep_em, hmm_deep_vi, '
-                                                        'hmm_margin_vi, hmm_mfvi)')
+parser.add_argument('--model', type=str, default='',
+                    help='which generative model to use (hmm_gru_mfvi, etc.'
+                                                        ')')
+parser.add_argument('--load-inference', type=str, default=None,
+                    help='Which file to load inference network parameters from, if any')
 parser.add_argument('--load-hmm', type=str,
                     help='which PyTorch file to load the HMM from, if any')
+
+# model config
 parser.add_argument('--word-dim', type=int, default=300,
                     help='dimensionality of the word embedding for 1billion')
 parser.add_argument('--nhid', type=int, default=32,
-                    help='number of hidden units per layer')
+                    help='number of hidden units per layer in the inference network')
 parser.add_argument('--z-dim', type=int, default=5,
                     help='dimensionality of the hidden z')
 parser.add_argument('--x-dim', type=int, default=10,
@@ -40,12 +44,16 @@ parser.add_argument('--lr', type=float, default=0.01,
                     help='initial learning rate')
 parser.add_argument('--clip', type=float, default=3.0,
                     help='gradient clipping')
+
+# these are all ignored for now
 parser.add_argument('--kl-anneal-delay', type=float, default=4,
                     help='number of epochs to delay increasing the KL divergence contribution')
 parser.add_argument('--kl-anneal-rate', type=float, default=0.0001,
                     help='amount to increase the KL divergence amount *per batch*')
 parser.add_argument('--kl-anneal-start', type=float, default=0.0001,
                     help='starting KL annealing value; upperbounds initial KL before annealing')
+
+#
 parser.add_argument('--epochs', type=int, default=1000,
                     help='upper epoch limit')
 parser.add_argument('--batch_size', type=int, default=80, metavar='N',
@@ -75,8 +83,6 @@ parser.add_argument('--quiet', action='store_true',
                     help='Turn off printing except where enabled by another CLI flag')
 parser.add_argument('--print-best', action='store_true',
                     help='Print the best validation loss, along with log marginal')
-parser.add_argument('--dump-param-traj', type=str, default=None,
-                    help='A place to dump out the parameter trajectories as an npz')
 parser.add_argument('--embedding', type=str, default=None,
                     help='Which file to load word embeddings from')
 args = parser.parse_args()
@@ -112,7 +118,6 @@ if args.slurm_id:
 if not args.quiet:
     print("running {}".format(' '.join(sys.argv)))
 
-
 ###############################################################################
 # Load data and build the model
 ###############################################################################
@@ -147,27 +152,11 @@ val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size,
 params = None
 
 # build the model using the true parameters of the generative model
-if args.inference == 'vi':
-    if args.model == 'hmm_vi':
-        model = hmm_filter.HMM_VI(z_dim=args.z_dim, x_dim=args.x_dim, nhid=args.nhid, word_dim=args.word_dim,
-                                  temp=args.temp, temp_prior=args.temp_prior, params=None)
-    elif args.model == 'hmm_deep_vi':
-        model = hmm_filter.HMM_VI_Layers(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
-                                         word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
-    elif args.model == 'hmm_margin_vi':
-        model = hmm_filter.HMM_VI_Marginalized(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
-                                               word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
-    elif args.model == 'hmm_mfvi':
-        model = hmm_filter.HMM_MFVI(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
-                                    word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
-    elif args.model == 'hmm_mfvi_yoon':
-        model = hmm_filter.HMM_MFVI_Yoon(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
-                                         word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
-elif args.inference == 'em':
-    if args.model == 'hmm_em':
-        model = hmm.HMM_EM(args.z_dim, args.x_dim)
-    elif args.model == 'hmm_deep_em':
-        model = hmm.HMM_EM_Layers(args.z_dim, args.x_dim, args.hidden)
+if args.model == 'hmm_gru_mfvi':
+    model = vi_filter.HMM_GRU_MFVI(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
+                                   word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
+else:
+    raise NotImplementedError("TODO")
 
 if args.embedding is not None and model.load_embedding:
     data = torch.load(args.embedding)
@@ -236,12 +225,12 @@ if args.inference == 'vi' and args.load_hmm:
 # At any point you can hit Ctrl + C to break out of training early.
 try:
     inference_optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
-
+   
     val_loss, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
     print("-" * 89)
     print("-ELBO: {}, ELBO ppl: {}, val before opt: {}".format(val_loss, np.exp(val_loss), np.exp(-true_marginal)))
     print("-" * 89)
-
+    
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()
 

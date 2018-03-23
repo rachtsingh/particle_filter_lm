@@ -1,5 +1,8 @@
 """
 This is an attempt to do inference on HMMs using particle filtering VI
+
+Not all models do particle filtering - we don't in the marginalized model yet because it hasn't been
+implemented, and the mean field model doesn't do filtering because it doesn't make sense
 """
 import torch
 import torch.nn as nn
@@ -43,9 +46,9 @@ class HMMInference(HMM_EM):
         self.enc = nn.ModuleList([self.inp_embedding, self.encoder])
 
         # latent stuff
-        self.z_decoder = nn.GRUCell(2 * nhid, z_dim)  # This is the autoregressive q(z)
+        self.z_decoder = nn.GRUCell(2 * nhid + z_dim, z_dim)  # This is the autoregressive q(z)
         self.logits = nn.Linear(z_dim, z_dim)
-        
+
         # self.logits = nn.Linear(z_dim + 2 * nhid, z_dim)
         self.temp = Variable(torch.Tensor([temp]))
         self.temp_prior = Variable(torch.Tensor([temp_prior]))
@@ -117,7 +120,7 @@ class HMMInference(HMM_EM):
 
     def forward(self, input, args, n_particles, test=False):
         T = F.log_softmax(self.T, 0)  # NOTE: in log-space
-        pi = F.log_softmax(self.pi, 0) # NOTE: in log-space
+        pi = F.log_softmax(self.pi, 0)  # NOTE: in log-space
         emit = self.calc_emit()
 
         # run the input and teacher-forcing inputs through the embedding layers here
@@ -136,14 +139,14 @@ class HMMInference(HMM_EM):
         accumulated_weights = -math.log(n_particles)  # will contain log w_{t - 1}
         resamples = 0
 
-        # in probability space
+        # in log probability space
         prior_probs = pi.unsqueeze(0).expand(batch_sz * n_particles, self.z_dim)
 
         logits = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)
 
         for i in range(seq_len):
-            # logits = self.logits(torch.cat([hidden_states[i], h], 1))
-            logits = self.logits(nn.functional.relu(self.z_decoder(hidden_states[i], logits)))
+            # logits = self.logits(nn.functional.relu(self.z_decoder(hidden_states[i], logits)))
+            logits = self.logits(nn.functional.relu(self.z_decoder(torch.cat([hidden_states[i], h], 1), logits)))
 
             # build the next z sample
             if any_nans(logits):
@@ -218,16 +221,15 @@ class HMMInference(HMM_EM):
                 # let's normalize things - slower, but safer
                 # prior_probs += 0.01
                 # prior_probs = prior_probs / prior_probs.sum(1, keepdim=True)
-            
-            # # if ((prior_probs.sum(1) - 1) > 1e-3).any().item():
+
+            # # if ((prior_probs.sum(1) - 1) > 1e-3).any()[0]:
             #     pdb.set_trace()
 
         if any_nans(loss):
             pdb.set_trace()
 
         # now, we calculate the final log-marginal estimator
-        nll = nlls.view(seq_len, n_particles, batch_sz).mean(1).sum()
-        return -loss.sum(), nll, (seq_len * batch_sz), resamples
+        return -loss.sum(), nlls.sum(), (seq_len * batch_sz * n_particles), resamples
 
     def evaluate(self, data_source, args, num_importance_samples=3):
         self.eval()
@@ -255,7 +257,7 @@ class HMMInference(HMM_EM):
             total_tokens = 1
         args.anneal = old_anneal
 
-        return total_loss.item() / total_tokens, total_log_marginal / total_tokens
+        return total_loss[0] / total_tokens, total_log_marginal / total_tokens
 
     def train_epoch(self, train_data, optimizer, epoch, args, num_importance_samples):
         self.train()
@@ -273,8 +275,8 @@ class HMMInference(HMM_EM):
             last_chunk_resamples = 0
 
             for i, batch in enumerate(train_data):
-                if i > 1000:
-                    break
+                # if i > 1000:
+                #     break
                 if args.cuda:
                     batch = batch.cuda()
                 data = Variable(batch.squeeze(0).t().contiguous())  # squeeze for 1 billion
@@ -290,7 +292,7 @@ class HMMInference(HMM_EM):
                 # torch.nn.utils.clip_grad_norm(self.parameters(), 0.01)
                 optimizer.step()
 
-                total_loss += elbo.detach().data.item()
+                total_loss += elbo.detach().data[0]
                 total_tokens += tokens
                 total_resamples += resamples
 
@@ -300,7 +302,7 @@ class HMMInference(HMM_EM):
                     chunk_tokens = total_tokens - last_chunk_tokens
                     chunk_resamples = (total_resamples - last_chunk_resamples) / args.log_interval
                     print_in_epoch_summary(epoch, batch_idx, args.batch_size, dataset_size,
-                                           loss.data.item(), NLL / (tokens / num_importance_samples),
+                                           loss.data[0], NLL / tokens,
                                            {'Chunk Loss': chunk_loss / chunk_tokens, 'resamples': chunk_resamples},
                                            tokens, "anneal={:.2f}".format(args.anneal))
                     last_chunk_loss = total_loss
@@ -357,12 +359,13 @@ class HMM_VI_Layers(HMM_VI):
             print("can load word embeddings on decoder side, tying weights")
             self.emit.data = self.inp_embedding.weight.data
 
+
 class HMM_VI_Marginalized(HMM_VI_Layers):
     """
     This version of the model marginalizes the loss at each step instead of relying on a sample - which is much worse
     The math isn't worked out yet (no guarantee that this is a proper lower bound), but it should be better at least
     """
-    
+
     def forward(self, input, args, n_particles, test=False):
         T = nn.Softmax(dim=0)(self.T)  # NOTE: not in log-space
         pi = nn.Softmax(dim=0)(self.pi)
@@ -376,13 +379,10 @@ class HMM_VI_Marginalized(HMM_VI_Layers):
         hidden_states = hidden_states.repeat(1, n_particles, 1)
 
         # run the z-decoder at this point, evaluating the NLL at each step
-        h = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)
+        z = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)
 
         nlls = hidden_states.data.new(seq_len, batch_sz * n_particles)
         loss = 0
-
-        accumulated_weights = -math.log(n_particles)  # will contain log w_{t - 1}
-        resamples = 0
 
         # now a log-prob
         prior_probs = pi.unsqueeze(0).expand(batch_sz * n_particles, self.z_dim)
@@ -391,7 +391,8 @@ class HMM_VI_Marginalized(HMM_VI_Layers):
 
         for i in range(seq_len):
             # logits = self.logits(torch.cat([hidden_states[i], h], 1))
-            logits = self.logits(nn.functional.relu(self.z_decoder(hidden_states[i], logits)))
+            # logits = self.logits(nn.functional.relu(self.z_decoder(hidden_states[i], logits)))
+            logits = self.logits(nn.functional.relu(self.z_decoder(torch.cat([hidden_states[i], z], 1), logits)))
 
             # build the next z sample
             if test:
@@ -401,21 +402,11 @@ class HMM_VI_Marginalized(HMM_VI_Layers):
                 q = RelaxedOneHotCategorical(temperature=self.temp, logits=logits)
                 z = q.rsample()
 
-            # we still need the sample
-            h = z
-
-            # prior
-            if test:
-                p = OneHotCategorical(probs=prior_probs)
-            else:
-                p = RelaxedOneHotCategorical(temperature=self.temp_prior, probs=prior_probs)
-
             lse = log_sum_exp(logits, dim=1).view(-1, 1)
             log_probs = logits - lse
 
-            # let's fuck this up
             # now, compute the log-likelihood of the data given this z-sample
-            # so emission is [batch_sz x z_dim], i.e. emission[i, j] is the log-probability of getting this 
+            # so emission is [batch_sz x z_dim], i.e. emission[i, j] is the log-probability of getting this
             # data for element i given choice z
             emission = F.embedding(input[i].repeat(n_particles), emit)
 
@@ -428,9 +419,8 @@ class HMM_VI_Marginalized(HMM_VI_Layers):
                 prior_probs = (T.unsqueeze(0) * z.unsqueeze(1)).sum(2)
 
         # now, we calculate the final log-marginal estimator
-        nll = nlls.view(seq_len, n_particles, batch_sz).mean(1).sum()
-        return loss.sum(), nll, (seq_len * batch_sz), resamples
-   
+        return loss.sum(), nlls.sum(), (seq_len * batch_sz * n_particles), 0
+
     # we need to fix evaluate to use the pfilter evaluation
     def evaluate(self, data_source, args, num_importance_samples=3):
         self.eval()
@@ -458,4 +448,132 @@ class HMM_VI_Marginalized(HMM_VI_Layers):
             total_tokens = 1
         args.anneal = old_anneal
 
-        return total_loss.item() / total_tokens, total_log_marginal / total_tokens
+        return total_loss[0] / total_tokens, total_log_marginal / total_tokens
+
+
+class HMM_MFVI(HMM_VI_Layers):
+    """
+    This model assumes that q(z) = \prod_i q(z_i)
+    """
+    def __init__(self, *args, **kwargs):
+        super(HMM_MFVI, self).__init__(*args, **kwargs)
+        self.logits = nn.Linear(2 * self.nhid, self.z_dim)
+
+    def forward(self, input, args, n_particles, test=False):
+        """
+        n_particles is interpreted as 1 for now to not screw anything up
+        """
+        n_particles = 1
+        T = nn.Softmax(dim=0)(self.T)  # NOTE: not in log-space
+        pi = nn.Softmax(dim=0)(self.pi)
+        emit = self.calc_emit()
+
+        # run the input and teacher-forcing inputs through the embedding layers here
+        seq_len, batch_sz = input.size()
+        emb = self.inp_embedding(input)
+        hidden = self.init_hidden(batch_sz, self.nhid, 2)  # bidirectional
+        hidden_states, (_, _) = self.encoder(emb, hidden)
+        hidden_states = hidden_states.repeat(1, n_particles, 1)
+
+        # run the z-decoder at this point, evaluating the NLL at each step
+        z = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)
+
+        nlls = hidden_states.data.new(seq_len, batch_sz * n_particles)
+        loss = 0
+
+        # now a log-prob
+        prior_probs = pi.unsqueeze(0).expand(batch_sz * n_particles, self.z_dim)
+
+        logits = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)
+
+        for i in range(seq_len):
+            # logits = self.logits(torch.cat([hidden_states[i], h], 1))
+            # logits = self.logits(nn.functional.relu(self.z_decoder(hidden_states[i], logits)))
+            logits = self.logits(hidden_states[i])
+
+            # build the next z sample
+            q = OneHotCategorical(logits=logits)
+            z = q.sample()
+
+            lse = log_sum_exp(logits, dim=1).view(-1, 1)
+            log_probs = logits - lse
+
+            # now, compute the log-likelihood of the data given this z-sample
+            # so emission is [batch_sz x z_dim], i.e. emission[i, j] is the log-probability of getting this
+            # data for element i given choice z
+            emission = F.embedding(input[i].repeat(n_particles), emit)
+
+            NLL = -log_sum_exp(emission + log_probs, 1)
+            nlls[i] = NLL.data
+            KL = (log_probs.exp() * (log_probs - (prior_probs + 1e-16).log())).sum(1)
+            loss += (NLL + KL)
+
+            if i != seq_len - 1:
+                prior_probs = (T.unsqueeze(0) * z.unsqueeze(1)).sum(2)
+
+        # now, we calculate the final log-marginal estimator
+        return loss.sum(), nlls.sum(), (seq_len * batch_sz * n_particles), 0
+
+
+class HMM_MFVI_Yoon(HMM_MFVI):
+    """
+    This is a particularly clever way to compute the ELBO for the full HMM at the same time
+    we assume q(z) = \prod q(z_t)
+
+    ELBO = E_q[log p(x, z)] + H[q]
+         = \sum_t \sum_{z_t} q(z_t) (\log p(x_t | z_t) + \ (unary)
+           \sum_{t}\sum_{z_t, z_{t - 1}} q(z_t)q(z_{t - 1}) \log p(z_t|z_{t - 1}) + \ (binary)
+           \sum_{z_1} q(z_1) \log p(z_1)
+
+    Note that this is the mean field model, the corresponding factored version is below
+    """
+    def forward(self, input, args, n_particles, test=False):
+        """
+        n_particles is interpreted as 1 for now to not screw anything up
+        """
+        n_particles = 1
+        T = F.log_softmax(self.T, 0)  # NOTE: not in log-space
+        pi = F.log_softmax(self.pi, 0)
+        emit = self.calc_emit()
+
+        pdb.set_trace()
+
+        # run the input and teacher-forcing inputs through the embedding layers here
+        seq_len, batch_sz = input.size()
+        emb = self.inp_embedding(input)
+        hidden = self.init_hidden(batch_sz, self.nhid, 2)  # bidirectional
+        hidden_states, (_, _) = self.encoder(emb, hidden)
+        hidden_states = hidden_states.repeat(1, n_particles, 1)
+
+        elbo = 0
+        NLL = 0
+
+        # now a logit
+        prior_logits = pi.unsqueeze(0).expand(batch_sz * n_particles, self.z_dim)
+
+        prev_probs = None
+        for i in range(seq_len):
+            logits = F.log_softmax(self.logits(hidden_states[i]), 1)
+            probs = logits.exp()
+            emission = F.embedding(input[i].repeat(n_particles), emit)
+
+            # unary potentials
+            elbo += (emission * probs).sum(1)
+            NLL += (emission * probs).sum(1).data
+
+            # binary potentials q(z_t)q(z_{t - 1})log p(z_t | z_{t - 1})
+            if i != 0:
+                elbo += (prev_probs.unsqueeze(1) *
+                         probs.unsqueeze(2) *
+                         T.unsqueeze(0)).sum(2).sum(1)
+            else:
+                # add the log p(z_1) term
+                elbo += (probs * prior_logits).sum(1)
+
+            # entropy term - negated
+            elbo -= (logits * probs).sum(1)
+
+            prev_probs = probs
+
+        # now, we calculate the final log-marginal estimator
+        return -elbo.sum(), NLL.sum(), (seq_len * batch_sz * n_particles), 0

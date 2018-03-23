@@ -45,7 +45,7 @@ def log_sum_exp(arr, dim=0):
         A = arr.max(dim)[0].unsqueeze(dim)
     else:
         A = Variable(arr.max(dim)[0].data, requires_grad=False).unsqueeze(dim)
-    return (A + (arr - A).exp().sum(dim, keepdim=True).log()).squeeze()
+    return (A + (arr - A).exp().sum(dim, keepdim=True).log()).squeeze(dim)
 
 
 def any_nans(a):
