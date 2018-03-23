@@ -250,7 +250,7 @@ class HMM_EM_Layers(HMM_EM):
 
     def calc_emit(self):
         return F.log_softmax(torch.mm(self.emit, self.hidden), 0)
-    
+
     def load_embedding(self, embedding):
         x_dim, word_dim = embedding.size()
         if x_dim != self.x_dim or word_dim != self.hidden_size:

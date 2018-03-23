@@ -69,7 +69,7 @@ parser.add_argument('--seed', type=int, default=1111,
                     help='random seed')
 parser.add_argument('--no-cuda', action='store_true',
                     help='use CUDA')
-parser.add_argument('--log-interval', type=int, default=100, metavar='N',
+parser.add_argument('--log-interval', type=int, default=500, metavar='N',
                     help='report interval')
 parser.add_argument('--save', type=str,  default=None,
                     help='path to save the final model')
@@ -143,6 +143,7 @@ else:
     train_data = HMMData(train)
     val_data = HMMData(val)
 
+# TODO: just changed shuffle value for testing!
 train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size,
                                            shuffle=True, **data_kwargs)
 val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size,
@@ -167,6 +168,8 @@ if args.load_hmm:
     print("loading HMM parameters from {}".format(args.load_hmm))
     model.set_params(torch.load(args.load_hmm))
 
+if args.load_inference:
+    model.init_inference(torch.load(args.load_inference))
 
 # cudafy after everything else is loaded
 if args.cuda and torch.cuda.is_available():
@@ -181,10 +184,6 @@ if not args.quiet:
     print('model architecture:')
     print(model)
 
-if args.dump_param_traj:
-    T_traj = np.zeros((args.epochs, args.z_dim, args.z_dim))
-    pi_traj = np.zeros((args.epochs, args.z_dim))
-    emit_traj = np.zeros((args.epochs, args.z_dim, args.x_dim))
 
 # Loop over epochs.
 args.anneal = 0.01
@@ -196,10 +195,9 @@ stored_loss = 100000000
 
 def flush():
     if args.save is not None:
-        if args.inference in ('vi', 'em'):
-            with open(args.save, 'w') as f:
-                torch.save(model.state_dict(), f)
-                print('saved parameters to {}'.format(args.save))
+        with open(args.save, 'w') as f:
+            torch.save(model.state_dict(), f)
+            print('saved parameters to {}'.format(args.save))
     if args.save_params is not None:
         with open(args.save_params, 'wb') as f:
             # NOTE: these are all in log-space
@@ -211,48 +209,22 @@ def flush():
             else:
                 hidden = None
             torch.save((T, pi, emit, hidden), f)
-    if args.dump_param_traj is not None:
-        np.savez(args.dump_param_traj, T=T_traj, pi=pi_traj, emit=emit_traj)
 
-if args.inference == 'vi' and args.load_hmm:
-    model.T.requires_grad = False
-    model.pi.requires_grad = False
-    model.emit.requires_grad = False
-    if hasattr(model, 'hidden'):
-        model.hidden.requires_grad = False
-    print("freezing T, pi, emit, hidden")
 
 # At any point you can hit Ctrl + C to break out of training early.
 try:
-    inference_optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
-   
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
+
     val_loss, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
     print("-" * 89)
-    print("-ELBO: {}, ELBO ppl: {}, val before opt: {}".format(val_loss, np.exp(val_loss), np.exp(-true_marginal)))
+    print("-ELBO: {}, ELBO ppl: {}".format(val_loss, np.exp(val_loss), ))
     print("-" * 89)
-    
+
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()
 
         if epoch < args.kl_anneal_delay:
             args.anneal = args.kl_anneal_start
-
-        # let's only optimize inference in the first few steps
-        if args.inference == 'vi' and args.load_hmm:
-            if epoch < 100:
-                optimizer = inference_optimizer
-            elif epoch == 100:
-                model.T.requires_grad = True
-                model.pi.requires_grad = True
-                model.emit.requires_grad = True
-                if hasattr(model, 'hidden'):
-                    model.hidden.requires_grad = True
-                all_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-                optimizer = all_optimizer
-            else:
-                optimizer = all_optimizer
-        else:
-            optimizer = inference_optimizer  # because that's everything, it's ok here
 
         train_loss = model.train_epoch(train_loader, optimizer, epoch, args, args.num_importance_samples)
 
@@ -262,23 +234,14 @@ try:
             best_val_loss = val_loss
         if not args.quiet:
             if val_loss < 10:
-                ppl = np.exp(-true_marginal)
+                ppl = np.exp(val_loss)
             else:
                 ppl = np.inf
 
             print('-' * 80)
-            print('| end of epoch {:3d} | time: {:5.2f}s | valid ELBO {:5.2f} | true marginal {:5.2f} | PPL: {:5.2f}'
-                  ''.format(epoch, (time.time() - epoch_start_time), val_loss, true_marginal, ppl))
+            print('| end of epoch {:3d} | time: {:5.2f}s | valid ELBO {:5.2f} | PPL: {:5.2f}'
+                  ''.format(epoch, (time.time() - epoch_start_time), val_loss, ppl))
             print('-' * 80)
-
-        if args.dump_param_traj:
-            # TODO: update this for new eval_log_marginal / model loading
-            T = nn.Softmax(dim=0)(model.T).data.cpu().numpy().T
-            pi = nn.Softmax(dim=0)(model.pi).data.cpu().numpy()
-            emit = nn.Softmax(dim=0)(model.emit).data.cpu().numpy().T
-            T_traj[epoch - 1] = T
-            pi_traj[epoch - 1] = pi
-            emit_traj[epoch - 1] = emit
 
         if epoch % 10 == 0:
             args.lr = args.lr * 0.8

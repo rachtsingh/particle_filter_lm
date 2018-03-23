@@ -79,11 +79,14 @@ parser.add_argument('--dump-param-traj', type=str, default=None,
                     help='A place to dump out the parameter trajectories as an npz')
 parser.add_argument('--embedding', type=str, default=None,
                     help='Which file to load word embeddings from')
+parser.add_argument('--load-model', type=str, default=None,
+                    help='Which model file to load if any')
 args = parser.parse_args()
 
 # Set the random seed manually for reproducibility.
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
+
 if torch.cuda.is_available():
     args.cuda = not args.no_cuda
     if not args.cuda:
@@ -176,7 +179,10 @@ if args.embedding is not None and model.load_embedding:
 # load parameters if we want that comparison:
 if args.load_hmm:
     print("loading HMM parameters from {}".format(args.load_hmm))
-    model.set_params(torch.load(args.load_hmm))
+    params = torch.load(args.load_hmm)
+    # just for mixed training comment out again
+    params = (params['T'], params['pi'], params['emit'], params['hidden'])
+    model.set_params(params)
 
 
 # cudafy after everything else is loaded
@@ -232,6 +238,9 @@ if args.inference == 'vi' and args.load_hmm:
     if hasattr(model, 'hidden'):
         model.hidden.requires_grad = False
     print("freezing T, pi, emit, hidden")
+
+if args.load_model:
+    model.load_state_dict(torch.load(args.load_model))
 
 # At any point you can hit Ctrl + C to break out of training early.
 try:

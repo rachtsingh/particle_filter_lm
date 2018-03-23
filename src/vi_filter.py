@@ -50,27 +50,27 @@ class HMM_GRU_MFVI(HMM_VI_Layers):
         self.hidden_rnn = nn.GRUCell(hidden_size, hidden_size)
         self.project = nn.Linear(hidden_size + z_dim, hidden_size)
 
-    def init_from_hmm(self, hmm_params):
+    def init_inference(self, hmm_params):
         # generative model parameters
-        self.T.weight.data = hmm_params['T']
-        self.pi.weight.data = hmm_params['pi']
-        self.emit.weight.data = hmm_params['emit']
+        self.T.data = hmm_params['T']
+        self.pi.data = hmm_params['pi']
+        self.emit.data = hmm_params['emit']
 
         self.project.bias.data.zero_()
         self.project.weight.data.zero_()
-        self.project.weight.data[:, self.hidden_size:] = hmm_params['hidden'].t()
+        self.project.weight.data[:, self.hidden_size:] = hmm_params['hidden']
 
         # inference network parameters
         self.inp_embedding.weight.data = hmm_params['inp_embedding.weight']
 
-        self.encoder.weight_ih_l0.weight.data = hmm_params['encoder.weight_ih_l0']
-        self.encoder.weight_hh_l0.weight.data = hmm_params['encoder.weight_hh_l0']
-        self.encoder.bias_ih_l0.weight.data = hmm_params['encoder.bias_ih_l0']
-        self.encoder.bias_hh_l0.weight.data = hmm_params['encoder.bias_hh_l0']
-        self.encoder.weight_ih_l0_reverse.weight.data = hmm_params['encoder.weight_ih_l0_reverse']
-        self.encoder.weight_hh_l0_reverse.weight.data = hmm_params['encoder.weight_hh_l0_reverse']
-        self.encoder.bias_ih_l0_reverse.weight.data = hmm_params['encoder.bias_ih_l0_reverse']
-        self.encoder.bias_hh_l0_reverse.weight.data = hmm_params['encoder.bias_hh_l0_reverse']
+        self.encoder.weight_ih_l0.data = hmm_params['encoder.weight_ih_l0']
+        self.encoder.weight_hh_l0.data = hmm_params['encoder.weight_hh_l0']
+        self.encoder.bias_ih_l0.data = hmm_params['encoder.bias_ih_l0']
+        self.encoder.bias_hh_l0.data = hmm_params['encoder.bias_hh_l0']
+        self.encoder.weight_ih_l0_reverse.data = hmm_params['encoder.weight_ih_l0_reverse']
+        self.encoder.weight_hh_l0_reverse.data = hmm_params['encoder.weight_hh_l0_reverse']
+        self.encoder.bias_ih_l0_reverse.data = hmm_params['encoder.bias_ih_l0_reverse']
+        self.encoder.bias_hh_l0_reverse.data = hmm_params['encoder.bias_hh_l0_reverse']
 
         self.logits.weight.data = hmm_params['logits.weight']
         self.logits.bias.data = hmm_params['logits.bias']
@@ -86,8 +86,6 @@ class HMM_GRU_MFVI(HMM_VI_Layers):
         T = nn.Softmax(dim=0)(self.T)  # NOTE: not in log-space
         pi = nn.Softmax(dim=0)(self.pi)
 
-        pdb.set_trace()
-
         # run the input and teacher-forcing inputs through the embedding layers here
         seq_len, batch_sz = input.size()
         emb = self.inp_embedding(input)
@@ -96,7 +94,7 @@ class HMM_GRU_MFVI(HMM_VI_Layers):
         hidden_states = hidden_states.repeat(1, n_particles, 1)
 
         # run the z-decoder at this point, evaluating the NLL at each step
-        h = self.init_hidden(batch_sz * n_particles, self.hidden_size, squeeze=True)
+        h = Variable(hidden_states.data.new(batch_sz, self.hidden_size).zero_())
 
         nlls = hidden_states.data.new(seq_len, batch_sz * n_particles)
         loss = 0
@@ -112,6 +110,7 @@ class HMM_GRU_MFVI(HMM_VI_Layers):
             logits = F.log_softmax(self.logits(hidden_states[i]), 1).detach()
             q = OneHotCategorical(logits=logits)
             z = q.sample()
+            # pdb.set_trace()
 
             # this should be batch_sz x x_dim
             feed = self.project(torch.cat([h, z], 1))  # batch_sz x hidden_dim

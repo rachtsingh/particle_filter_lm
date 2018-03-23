@@ -536,8 +536,6 @@ class HMM_MFVI_Yoon(HMM_MFVI):
         pi = F.log_softmax(self.pi, 0)
         emit = self.calc_emit()
 
-        pdb.set_trace()
-
         # run the input and teacher-forcing inputs through the embedding layers here
         seq_len, batch_sz = input.size()
         emb = self.inp_embedding(input)
