@@ -10,7 +10,7 @@ from itertools import product
 from torch import nn
 import pdb  # noqa: F401
 
-from src.utils import get_sha
+from src.utils import get_sha, VERSION
 from src.hmm_dataset import create_hmm_data, HMMData
 from src.real_hmm_dataset import OneBillionWord
 from src import hmm_filter
@@ -217,7 +217,8 @@ stored_loss = 100000000
 def flush():
     if args.save is not None:
         if args.inference in ('vi', 'em'):
-            with open(args.save, 'w') as f:
+            mode = 'w' if VERSION[0] == 2 else 'wb'
+            with open(args.save, mode) as f:
                 torch.save(model.state_dict(), f)
                 print('saved parameters to {}'.format(args.save))
     if args.save_params is not None:

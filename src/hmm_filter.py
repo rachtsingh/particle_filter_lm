@@ -15,7 +15,7 @@ import sys
 import pdb  # noqa: F401
 import gc
 
-from src.utils import print_in_epoch_summary, log_sum_exp, any_nans  # noqa: F401
+from src.utils import print_in_epoch_summary, log_sum_exp, any_nans, VERSION  # noqa: F401
 from src.locked_dropout import LockedDropout  # noqa: F401
 from src.embed_regularize import embedded_dropout  # noqa: F401
 from src.hmm import HMM_EM
@@ -257,7 +257,12 @@ class HMMInference(HMM_EM):
             total_tokens = 1
         args.anneal = old_anneal
 
-        return total_loss[0] / total_tokens, total_log_marginal / total_tokens
+        if VERSION[1]:
+            total_loss = total_loss.item()
+        else:
+            total_loss = total_loss[0]
+
+        return total_loss / total_tokens, total_log_marginal / total_tokens
 
     def train_epoch(self, train_data, optimizer, epoch, args, num_importance_samples):
         self.train()
@@ -275,8 +280,8 @@ class HMMInference(HMM_EM):
             last_chunk_resamples = 0
 
             for i, batch in enumerate(train_data):
-                # if i > 1000:
-                #     break
+                if i > 1000:
+                    break
                 if args.cuda:
                     batch = batch.cuda()
                 data = Variable(batch.squeeze(0).t().contiguous())  # squeeze for 1 billion
@@ -291,18 +296,22 @@ class HMMInference(HMM_EM):
                 loss.backward()
                 # torch.nn.utils.clip_grad_norm(self.parameters(), 0.01)
                 optimizer.step()
-
-                total_loss += elbo.detach().data[0]
+                
+                if VERSION[1]:
+                    total_loss += elbo.detach().data.item()
+                else:
+                    total_loss += elbo.detach().data[0]
                 total_tokens += tokens
                 total_resamples += resamples
 
                 # print if necessary
                 if batch_idx % args.log_interval == 0 and batch_idx > 0 and not args.quiet:
+                    l = loss.data.item() if VERSION[1] else loss.data[0]
                     chunk_loss = total_loss - last_chunk_loss
                     chunk_tokens = total_tokens - last_chunk_tokens
                     chunk_resamples = (total_resamples - last_chunk_resamples) / args.log_interval
                     print_in_epoch_summary(epoch, batch_idx, args.batch_size, dataset_size,
-                                           loss.data[0], NLL / tokens,
+                                           l, NLL / tokens,
                                            {'Chunk Loss': chunk_loss / chunk_tokens, 'resamples': chunk_resamples},
                                            tokens, "anneal={:.2f}".format(args.anneal))
                     last_chunk_loss = total_loss
@@ -529,14 +538,12 @@ class HMM_MFVI_Yoon(HMM_MFVI):
     """
     def forward(self, input, args, n_particles, test=False):
         """
-        n_particles is interpreted as 1 for now to not screw anything up
+        If n_particles != 1, this the IWAE estimator
         """
-        n_particles = 1
-        T = F.log_softmax(self.T, 0)  # NOTE: not in log-space
-        pi = F.log_softmax(self.pi, 0)
-        emit = self.calc_emit()
+        T = F.log_softmax(self.T, 0)  # NOTE: in log-space
+        pi = F.log_softmax(self.pi, 0)  # in log-space, intentionally
+        emit = self.calc_emit()  # also in log-space
 
-        # run the input and teacher-forcing inputs through the embedding layers here
         seq_len, batch_sz = input.size()
         emb = self.inp_embedding(input)
         hidden = self.init_hidden(batch_sz, self.nhid, 2)  # bidirectional
@@ -550,14 +557,15 @@ class HMM_MFVI_Yoon(HMM_MFVI):
         prior_logits = pi.unsqueeze(0).expand(batch_sz * n_particles, self.z_dim)
 
         prev_probs = None
+
         for i in range(seq_len):
-            logits = F.log_softmax(self.logits(hidden_states[i]), 1)
-            probs = logits.exp()
-            emission = F.embedding(input[i].repeat(n_particles), emit)
+            logits = F.log_softmax(self.logits(hidden_states[i]), 1)  # log q(z_i)
+            probs = logits.exp()  # q(z_i)
+            emission = F.embedding(input[i].repeat(n_particles), emit)  # log p(x_i | z_i)
 
             # unary potentials
-            elbo += (emission * probs).sum(1)
-            NLL += (emission * probs).sum(1).data
+            elbo += (emission * probs).sum(1)  # E_q[log p(x_i | z_i)]
+            NLL += -(emission * probs).sum(1).data
 
             # binary potentials q(z_t)q(z_{t - 1})log p(z_t | z_{t - 1})
             if i != 0:
@@ -568,16 +576,20 @@ class HMM_MFVI_Yoon(HMM_MFVI):
                 # add the log p(z_1) term
                 elbo += (probs * prior_logits).sum(1)
 
-            # entropy term - negated
+            # entropy term - E[-log q]
             elbo -= (logits * probs).sum(1)
 
             prev_probs = probs
 
+        if n_particles != 1:
+            elbo = log_sum_exp(elbo.view(n_particles, batch_sz), 0) - math.log(n_particles)
+            NLL = NLL.view(n_particles, batch_sz).mean(0)
+
         # now, we calculate the final log-marginal estimator
-        return -elbo.sum(), NLL.sum(), (seq_len * batch_sz * n_particles), 0
+        return -elbo.sum(), NLL.sum(), (seq_len * batch_sz), 0
 
 
-class HMM_MFVI_Yoon_Deep(HMM_MFVI):
+class HMM_MFVI_Yoon_Deep(HMM_MFVI_Yoon):
     """
     Same as above, but with a more complex map from the LSTM states to the logits
     """

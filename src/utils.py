@@ -1,3 +1,4 @@
+import torch
 from torch.autograd import Variable
 import sys
 import subprocess
@@ -52,3 +53,5 @@ def any_nans(a):
     if isinstance(a, Variable):
         a = a.data
     return np.isnan(a.cpu().numpy()).any()
+
+VERSION = (sys.version_info[0], torch.__version__.split('+')[1] == 'c474136')
