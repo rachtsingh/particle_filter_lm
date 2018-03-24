@@ -575,3 +575,15 @@ class HMM_MFVI_Yoon(HMM_MFVI):
 
         # now, we calculate the final log-marginal estimator
         return -elbo.sum(), NLL.sum(), (seq_len * batch_sz * n_particles), 0
+
+
+class HMM_MFVI_Yoon_Deep(HMM_MFVI):
+    """
+    Same as above, but with a more complex map from the LSTM states to the logits
+    """
+    def __init__(self, *args, **kwargs):
+        super(HMM_MFVI_Yoon_Deep, self).__init__(*args, **kwargs)
+        self.z_decoder = None
+        self.logits = nn.Sequential(nn.Linear(2 * self.nhid, self.nhid),
+                                    nn.ReLU(),
+                                    nn.Linear(self.nhid, self.z_dim))

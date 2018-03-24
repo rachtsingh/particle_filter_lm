@@ -10,9 +10,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 from torch.autograd import Variable
 from torch.distributions import RelaxedOneHotCategorical, OneHotCategorical  # noqa: F401
-import numpy as np
 import math
-import sys
 import pdb  # noqa: F401
 import gc
 

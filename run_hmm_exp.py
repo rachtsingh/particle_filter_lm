@@ -166,6 +166,9 @@ if args.inference == 'vi':
     elif args.model == 'hmm_mfvi_yoon':
         model = hmm_filter.HMM_MFVI_Yoon(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
                                          word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
+    elif args.model == 'hmm_mfvi_yoon_deep':
+        model = hmm_filter.HMM_MFVI_Yoon_Deep(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
+                                              word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
 elif args.inference == 'em':
     if args.model == 'hmm_em':
         model = hmm.HMM_EM(args.z_dim, args.x_dim)
