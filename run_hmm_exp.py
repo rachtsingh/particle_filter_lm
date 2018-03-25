@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from itertools import product
 from torch import nn
+from torch.optim.lr_scheduler import StepLR, ReduceLROnPlateau  # noqa: F401
 import pdb  # noqa: F401
 
 from src.utils import get_sha, VERSION
@@ -252,7 +253,8 @@ if args.load_model:
 
 # At any point you can hit Ctrl + C to break out of training early.
 try:
-    inference_optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
+    scheduler = ReduceLROnPlateau(optimizer, factor=0.3, patience=1, verbose=True, threshold=0.1, min_lr=1e-3)
 
     # val_loss, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
     # print("-" * 89)
@@ -266,28 +268,30 @@ try:
             args.anneal = args.kl_anneal_start
 
         # let's only optimize inference in the first few steps
-        if args.inference == 'vi' and args.load_hmm:
-            if epoch < 100:
-                optimizer = inference_optimizer
-            elif epoch == 100:
-                model.T.requires_grad = True
-                model.pi.requires_grad = True
-                model.emit.requires_grad = True
-                if hasattr(model, 'hidden'):
-                    model.hidden.requires_grad = True
-                all_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-                optimizer = all_optimizer
-            else:
-                optimizer = all_optimizer
-        else:
-            optimizer = inference_optimizer  # because that's everything, it's ok here
+        # if args.inference == 'vi' and args.load_hmm:
+        #     if epoch < 100:
+        #         optimizer = inference_optimizer
+        #     elif epoch == 100:
+        #         model.T.requires_grad = True
+        #         model.pi.requires_grad = True
+        #         model.emit.requires_grad = True
+        #         if hasattr(model, 'hidden'):
+        #             model.hidden.requires_grad = True
+        #         all_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+        #         optimizer = all_optimizer
+        #     else:
+        #         optimizer = all_optimizer
+        # else:
+        #     optimizer = inference_optimizer  # because that's everything, it's ok here
 
         train_loss = model.train_epoch(train_loader, optimizer, epoch, args, args.num_importance_samples)
 
         # let's ignore ASGD for now
         val_loss, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
+        scheduler.step(val_loss)
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            flush()
         if not args.quiet:
             if val_loss < 10:
                 ppl = np.exp(-true_marginal)

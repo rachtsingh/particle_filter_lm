@@ -289,9 +289,6 @@ class HMMInference(HMM_EM):
                 if epoch > args.kl_anneal_delay:
                     args.anneal = min(args.anneal + args.kl_anneal_rate, 1.)
                 optimizer.zero_grad()
-                if i > 1000:
-                    # elbo, NLL, tokens, resamples = self.forward(data, args, num_importance_samples, test=None)
-                    break
                 elbo, NLL, tokens, resamples = self.forward(data, args, num_importance_samples)
                 loss = elbo/tokens
                 loss.backward()
@@ -548,7 +545,7 @@ class HMM_MFVI_Yoon(HMM_MFVI):
 
         seq_len, batch_sz = input.size()
         emb = self.inp_embedding(input)
-        hidden = self.init_hidden(batch_sz, self.nhid, 2)  # bidirectional
+        hidden = self.init_hidden(batch_sz, self.nhid, 4)  # bidirectional
         hidden_states, (_, _) = self.encoder(emb, hidden)
         hidden_states = hidden_states.repeat(1, n_particles, 1)
 
@@ -611,6 +608,10 @@ class HMM_MFVI_Mine(HMM_MFVI_Yoon_Deep):
     downstream we can optimize the approximate posterior.
     """
 
+    def __init__(self, *args, **kwargs):
+        super(HMM_MFVI_Mine, self).__init__(*args, **kwargs)
+        self.encoder = torch.nn.LSTM(self.word_dim, self.nhid, 2, dropout=0, bidirectional=True)
+
     def forward_backward(self, input, stop=False):
         """
         Modify the forward-backward to compute beta[t], since we need that
@@ -643,14 +644,6 @@ class HMM_MFVI_Mine(HMM_MFVI_Yoon_Deep):
                                   F.embedding(input[t + 1], emit).unsqueeze(2), 1)
 
         log_marginal = log_sum_exp(alpha[-1] + beta[-1], dim=-1)
-        # all_log_marginals = [log_sum_exp(alpha[i] + beta[i], -1) for i in range(seq_len)]
-        # ss = np.array([x.sum().data[0] for x in all_log_marginals])
-
-        # if (log_sum_exp(alpha[0] + beta[0], -1) - log_sum_exp(alpha[-1] + beta[-1], -1)).data.max() > 1:
-        #     pdb.set_trace()
-        #
-        # if stop:
-        #     pdb.set_trace()
 
         return [alpha[i] + beta[i] - log_marginal.unsqueeze(1) for i in range(seq_len)], 0, log_marginal
 
@@ -660,21 +653,18 @@ class HMM_MFVI_Mine(HMM_MFVI_Yoon_Deep):
 
         seq_len, batch_sz = input.size()
         emb = self.inp_embedding(input)
-        hidden = self.init_hidden(batch_sz, self.nhid, 2)  # bidirectional
+        hidden = self.init_hidden(batch_sz, self.nhid, 4)  # bidirectional
         hidden_states, (_, _) = self.encoder(emb, hidden)
 
         log_posterior, _, log_marginal = self.forward_backward(input, stop=not test)
 
-        # if test is None:
-        #     pdb.set_trace()
-
         KL = 0
         for i in range(seq_len):
-            log_post = log_posterior[i].detach()
+            log_post = Variable(log_posterior[i].data)
             logits = F.log_softmax(self.logits(hidden_states[i]), 1)  # log q(z_i)
             KL += (logits.exp() * (logits - log_post)).sum(1)
 
         loss = -log_marginal + KL
 
         # now, we calculate the final log-marginal estimator
-        return loss.sum(), 0, (seq_len * batch_sz), 0
+        return loss.sum(), -log_marginal.data.sum(), (seq_len * batch_sz), 0

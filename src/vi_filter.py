@@ -106,15 +106,15 @@ class HMM_GRU_MFVI(HMM_VI_Layers):
         for i in range(seq_len):
             # build the next z sample - not differentiable! we don't train the inference network
             logits = F.log_softmax(self.logits(hidden_states[i]), 1).detach()
-            q = OneHotCategorical(logits=logits)
-            z = q.sample()
-            # pdb.set_trace()
+            z = OneHotCategorical(logits=logits).sample()
 
             # this should be batch_sz x x_dim
             feed = self.project(torch.cat([h, z], 1))  # batch_sz x hidden_dim
             scores = torch.mm(feed, self.emit.t())  # batch_sz x x_dim
 
             NLL = nn.CrossEntropyLoss(reduce=False)(scores, input[i].repeat(n_particles))
+            if NLL.data.mean() > 30:
+                pdb.set_trace()
             KL = (logits.exp() * (logits - (prior_probs + 1e-16).log())).sum(1)
             loss += (NLL + KL)
 
@@ -127,3 +127,42 @@ class HMM_GRU_MFVI(HMM_VI_Layers):
 
         # now, we calculate the final log-marginal estimator
         return loss.sum(), nlls.sum(), (seq_len * batch_sz * n_particles), 0
+
+
+class HMM_GRU_MFVI_Deep(HMM_GRU_MFVI):
+    def __init__(self, *args, **kwargs):
+        super(HMM_GRU_MFVI_Deep, self).__init__(*args, **kwargs)
+        self.z_decoder = None
+        self.logits = nn.Sequential(nn.Linear(2 * self.nhid, self.nhid),
+                                    nn.ReLU(),
+                                    nn.Linear(self.nhid, self.z_dim))
+
+    def init_inference(self, hmm_params):
+        # generative model parameters
+        self.T.data = hmm_params['T']
+        self.pi.data = hmm_params['pi']
+        self.emit.data = hmm_params['emit']
+
+        self.project.bias.data.zero_()
+        self.project.weight.data.zero_()
+        self.project.weight.data[:, self.hidden_size:] = hmm_params['hidden']
+
+        # inference network parameters
+        self.inp_embedding.weight.data = hmm_params['inp_embedding.weight']
+
+        self.encoder.weight_ih_l0.data = hmm_params['encoder.weight_ih_l0']
+        self.encoder.weight_hh_l0.data = hmm_params['encoder.weight_hh_l0']
+        self.encoder.bias_ih_l0.data = hmm_params['encoder.bias_ih_l0']
+        self.encoder.bias_hh_l0.data = hmm_params['encoder.bias_hh_l0']
+        self.encoder.weight_ih_l0_reverse.data = hmm_params['encoder.weight_ih_l0_reverse']
+        self.encoder.weight_hh_l0_reverse.data = hmm_params['encoder.weight_hh_l0_reverse']
+        self.encoder.bias_ih_l0_reverse.data = hmm_params['encoder.bias_ih_l0_reverse']
+        self.encoder.bias_hh_l0_reverse.data = hmm_params['encoder.bias_hh_l0_reverse']
+
+        self.logits[0].weight.data = hmm_params['logits.0.weight']
+        self.logits[0].bias.data = hmm_params['logits.0.bias']
+        self.logits[2].weight.data = hmm_params['logits.2.weight']
+        self.logits[2].bias.data = hmm_params['logits.2.bias']
+
+        # probably unnecessary
+        self.enc = nn.ModuleList([self.inp_embedding, self.encoder])

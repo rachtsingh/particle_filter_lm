@@ -156,6 +156,9 @@ params = None
 if args.model == 'hmm_gru_mfvi':
     model = vi_filter.HMM_GRU_MFVI(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
                                    word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
+elif args.model == 'hmm_gru_mfvi_deep':
+    model = vi_filter.HMM_GRU_MFVI_Deep(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
+                                        word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
 else:
     raise NotImplementedError("TODO")
 
