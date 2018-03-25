@@ -174,6 +174,10 @@ elif args.inference == 'em':
         model = hmm.HMM_EM(args.z_dim, args.x_dim)
     elif args.model == 'hmm_deep_em':
         model = hmm.HMM_EM_Layers(args.z_dim, args.x_dim, args.hidden)
+elif args.inference == 'mix':
+    if args.model == 'hmm_mfvi_mine':
+        model = hmm_filter.HMM_MFVI_Mine(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
+                                         word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
 
 if args.embedding is not None and model.load_embedding:
     data = torch.load(args.embedding)

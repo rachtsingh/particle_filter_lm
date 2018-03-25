@@ -280,8 +280,6 @@ class HMMInference(HMM_EM):
             last_chunk_resamples = 0
 
             for i, batch in enumerate(train_data):
-                if i > 1000:
-                    break
                 if args.cuda:
                     batch = batch.cuda()
                 data = Variable(batch.squeeze(0).t().contiguous())  # squeeze for 1 billion
@@ -291,12 +289,14 @@ class HMMInference(HMM_EM):
                 if epoch > args.kl_anneal_delay:
                     args.anneal = min(args.anneal + args.kl_anneal_rate, 1.)
                 optimizer.zero_grad()
+                if i > 500:
+                    elbo, NLL, tokens, resamples = self.forward(data, args, num_importance_samples, test=None)
                 elbo, NLL, tokens, resamples = self.forward(data, args, num_importance_samples)
                 loss = elbo/tokens
                 loss.backward()
                 # torch.nn.utils.clip_grad_norm(self.parameters(), 0.01)
                 optimizer.step()
-                
+
                 if VERSION[1]:
                     total_loss += elbo.detach().data.item()
                 else:
@@ -538,8 +538,9 @@ class HMM_MFVI_Yoon(HMM_MFVI):
     """
     def forward(self, input, args, n_particles, test=False):
         """
-        If n_particles != 1, this the IWAE estimator
+        If n_particles != 1, this the IWAE estimator, which doesn't make sense here
         """
+        n_particles = 1
         T = F.log_softmax(self.T, 0)  # NOTE: in log-space
         pi = F.log_softmax(self.pi, 0)  # in log-space, intentionally
         emit = self.calc_emit()  # also in log-space
@@ -599,3 +600,79 @@ class HMM_MFVI_Yoon_Deep(HMM_MFVI_Yoon):
         self.logits = nn.Sequential(nn.Linear(2 * self.nhid, self.nhid),
                                     nn.ReLU(),
                                     nn.Linear(self.nhid, self.z_dim))
+
+
+class HMM_MFVI_Mine(HMM_MFVI_Yoon_Deep):
+    """
+    This model does something different - it computes two losses: log p(x), exactly computed using
+    the forward-backward algorithm, and KL(p(z|x) || q(z)) - i.e. it tries to fit the approximate posterior
+    to the true posterior. Why do this instead of using the exact posterior everywhere? Because we think
+    downstream we can optimize the approximate posterior.
+    """
+
+    def forward_backward(self, input, stop=False):
+        """
+        Modify the forward-backward to compute beta[t], since we need that
+        """
+        input = input.long()
+
+        seq_len, batch_size = input.size()
+        alpha = [None for i in range(seq_len)]
+        beta = [None for i in range(seq_len)]
+
+        T = F.log_softmax(self.T, 0)
+        pi = F.log_softmax(self.pi, 0)
+        emit = self.calc_emit()
+
+        # forward pass
+        alpha[0] = self.log_prob(input[0], (emit,)) + pi.view(1, -1)
+        beta[-1] = Variable(torch.zeros(batch_size, self.z_dim))
+
+        if T.is_cuda:
+            beta[-1] = beta[-1].cuda()
+
+        for t in range(1, seq_len):
+            logprod = alpha[t - 1].unsqueeze(2).expand(batch_size, self.z_dim, self.z_dim) + T.t().unsqueeze(0)
+            alpha[t] = self.log_prob(input[t], (emit,)) + log_sum_exp(logprod, 1)
+
+        # keep around for now, but unnecessary in our models
+        for t in range(seq_len - 2, -1, -1):
+            beta[t] = log_sum_exp(T.unsqueeze(0) +
+                                  beta[t + 1].unsqueeze(2) +
+                                  F.embedding(input[t + 1], emit).unsqueeze(2), 1)
+
+        log_marginal = log_sum_exp(alpha[-1] + beta[-1], dim=-1)
+        # all_log_marginals = [log_sum_exp(alpha[i] + beta[i], -1) for i in range(seq_len)]
+        # ss = np.array([x.sum().data[0] for x in all_log_marginals])
+
+        # if (log_sum_exp(alpha[0] + beta[0], -1) - log_sum_exp(alpha[-1] + beta[-1], -1)).data.max() > 1:
+        #     pdb.set_trace()
+        #
+        # if stop:
+        #     pdb.set_trace()
+
+        return [alpha[i] + beta[i] - log_marginal.unsqueeze(1) for i in range(seq_len)], 0, log_marginal
+
+    def forward(self, input, args, n_particles, test=False):
+        if test:
+            return super(HMM_MFVI_Mine, self).forward(input, args, n_particles, test)
+
+        seq_len, batch_sz = input.size()
+        emb = self.inp_embedding(input)
+        hidden = self.init_hidden(batch_sz, self.nhid, 2)  # bidirectional
+        hidden_states, (_, _) = self.encoder(emb, hidden)
+
+        log_posterior, _, log_marginal = self.forward_backward(input, stop=not test)
+
+        if test is None:
+            pdb.set_trace()
+
+        for i in range(seq_len):
+            log_post = log_posterior[i].detach()
+            logits = F.log_softmax(self.logits(hidden_states[i]), 1)  # log q(z_i)
+            KL = (log_post.exp() * (log_post - logits)).sum(1)
+
+        loss = -log_marginal + KL
+
+        # now, we calculate the final log-marginal estimator
+        return loss.sum(), 0, (seq_len * batch_sz), 0
