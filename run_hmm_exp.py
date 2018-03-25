@@ -254,10 +254,10 @@ if args.load_model:
 try:
     inference_optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
 
-    val_loss, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
-    print("-" * 89)
-    print("-ELBO: {}, ELBO ppl: {}, val before opt: {}".format(val_loss, np.exp(val_loss), np.exp(-true_marginal)))
-    print("-" * 89)
+    # val_loss, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
+    # print("-" * 89)
+    # print("-ELBO: {}, ELBO ppl: {}, val before opt: {}".format(val_loss, np.exp(val_loss), np.exp(-true_marginal)))
+    # print("-" * 89)
 
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()

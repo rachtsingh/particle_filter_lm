@@ -289,8 +289,9 @@ class HMMInference(HMM_EM):
                 if epoch > args.kl_anneal_delay:
                     args.anneal = min(args.anneal + args.kl_anneal_rate, 1.)
                 optimizer.zero_grad()
-                if i > 500:
-                    elbo, NLL, tokens, resamples = self.forward(data, args, num_importance_samples, test=None)
+                if i > 1000:
+                    # elbo, NLL, tokens, resamples = self.forward(data, args, num_importance_samples, test=None)
+                    break
                 elbo, NLL, tokens, resamples = self.forward(data, args, num_importance_samples)
                 loss = elbo/tokens
                 loss.backward()
@@ -664,13 +665,14 @@ class HMM_MFVI_Mine(HMM_MFVI_Yoon_Deep):
 
         log_posterior, _, log_marginal = self.forward_backward(input, stop=not test)
 
-        if test is None:
-            pdb.set_trace()
+        # if test is None:
+        #     pdb.set_trace()
 
+        KL = 0
         for i in range(seq_len):
             log_post = log_posterior[i].detach()
             logits = F.log_softmax(self.logits(hidden_states[i]), 1)  # log q(z_i)
-            KL = (log_post.exp() * (log_post - logits)).sum(1)
+            KL += (logits.exp() * (logits - log_post)).sum(1)
 
         loss = -log_marginal + KL
 
