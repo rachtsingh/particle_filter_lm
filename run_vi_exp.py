@@ -26,6 +26,8 @@ parser.add_argument('--load-inference', type=str, default=None,
                     help='Which file to load inference network parameters from, if any')
 parser.add_argument('--load-hmm', type=str,
                     help='which PyTorch file to load the HMM from, if any')
+parser.add_argument('--load-model', type=str,
+                    help='which model file to load, if any')
 
 # model config
 parser.add_argument('--word-dim', type=int, default=300,
@@ -182,6 +184,9 @@ else:
 if args.embedding is not None and model.load_embedding:
     data = torch.load(args.embedding)
     model.load_embedding(data)
+
+if args.load_model:
+    model.load_state_dict(torch.load(args.load_model))
 
 # load parameters if we want that comparison:
 if args.load_hmm:
