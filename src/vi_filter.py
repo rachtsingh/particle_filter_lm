@@ -414,7 +414,8 @@ class VRNN_LSTM_Auto_Concrete(HMM_LSTM_Auto_Deep):
 
 class HMM_Joint_LSTM(HMM_EM_Layers):
     """
-    This is a reimplementation of the joint-hybrid work of (Krakovna, 2016)
+    This is a reimplementation of the joint-hybrid work of (Krakovna, 2016),
+    and the separate opt, though we do everything via gradient descent rather than a custom FFBS
     """
     def __init__(self, z_dim, x_dim, hidden_size, word_dim, lstm_hidden_size, separate_opt=False):
         super(HMM_Joint_LSTM, self).__init__(z_dim, x_dim, hidden_size)
@@ -425,9 +426,12 @@ class HMM_Joint_LSTM(HMM_EM_Layers):
         self.lstm_hidden_size = lstm_hidden_size
 
     def forward(self, input, args, test=False):
+        NO_HMM = True
+
         seq_len, batch_size = input.size()
         # compute the loss as the sum of the forward-backward loss
-        alpha, _, log_marginal = self.forward_backward(input)
+        if not NO_HMM:
+            alpha, _, log_marginal = self.forward_backward(input)
         emb = self.inp_embedding(input)
         T = F.log_softmax(self.T, 0)
         pi = F.log_softmax(self.pi, 0).unsqueeze(0).expand(batch_size, self.z_dim)
@@ -444,21 +448,32 @@ class HMM_Joint_LSTM(HMM_EM_Layers):
         # note that \alpha(t) contains information about the current x, so we need to prop forward
         current_state = None
         for i in range(seq_len):
-            if i == 0:
-                hmm_post = pi
-            else:
-                hmm_post = log_sum_exp(T.unsqueeze(0) + current_state.unsqueeze(1), 2)
+            if not NO_HMM:
+                if i == 0:
+                    hmm_post = pi
+                else:
+                    hmm_post = log_sum_exp(T.unsqueeze(0) + current_state.unsqueeze(1), 2)
 
-            scores = self.project(torch.cat([h[0], hmm_post.exp()], 1))
+            if NO_HMM:
+                hmm_post = Variable(torch.zeros(batch_size, self.z_dim).cuda())
+            else:
+                hmm_post = hmm_post.exp()
+
+            scores = self.project(torch.cat([h[0], hmm_post], 1))
             NLL += nn.CrossEntropyLoss(size_average=False)(scores, input[i])
 
             # feed information from the current state into the next prediction (i.e. teacher-forcing)
             h = self.lstm(emb[i], h)
-            current_state = F.log_softmax(alpha[i], 1)
-            if self.separate_opt:
-                current_state = current_state.detach()
-
-        return (-log_marginal.sum() + NLL.sum()), NLL.data.sum()
+            
+            if not NO_HMM:
+                current_state = F.log_softmax(alpha[i], 1)
+                if self.separate_opt:
+                    current_state = current_state.detach()
+        if NO_HMM:
+            loss = NLL.sum()
+        else:
+            loss = -log_marginal.sum() + NLL.sum()
+        return loss, NLL.data.sum()
 
     def evaluate(self, data_source, args, num_samples=None):
         self.eval()
