@@ -609,6 +609,50 @@ class HMM_MFVI_Yoon_Deep(HMM_MFVI_Yoon):
                                     nn.Linear(self.nhid, self.z_dim))
 
 
+class HMM_MFVI_Ablation(HMM_MFVI_Yoon_Deep):
+    """
+    This model does all of the optimization methods
+    """
+    def forward_backward(self, input, stop=False):
+        """
+        Modify the forward-backward to compute beta[t], since we need that for checking the sampling in the particle filter case
+        """
+        input = input.long()
+
+        seq_len, batch_size = input.size()
+        alpha = [None for i in range(seq_len)]
+        beta = [None for i in range(seq_len)]
+
+        T = F.log_softmax(self.T, 0)
+        pi = F.log_softmax(self.pi, 0)
+        emit = self.calc_emit()
+
+        # forward pass
+        alpha[0] = self.log_prob(input[0], (emit,)) + pi.view(1, -1)
+        beta[-1] = Variable(torch.zeros(batch_size, self.z_dim))
+
+        if T.is_cuda:
+            beta[-1] = beta[-1].cuda()
+
+        for t in range(1, seq_len):
+            logprod = alpha[t - 1].unsqueeze(2).expand(batch_size, self.z_dim, self.z_dim) + T.t().unsqueeze(0)
+            alpha[t] = self.log_prob(input[t], (emit,)) + log_sum_exp(logprod, 1)
+
+        # keep around for now, but unnecessary in our models
+        for t in range(seq_len - 2, -1, -1):
+            beta[t] = log_sum_exp(T.unsqueeze(0) +
+                                  beta[t + 1].unsqueeze(2) +
+                                  F.embedding(input[t + 1], emit).unsqueeze(2), 1)
+
+        log_marginal = log_sum_exp(alpha[-1] + beta[-1], dim=-1)
+
+        return [alpha[i] + beta[i] - log_marginal.unsqueeze(1) for i in range(seq_len)], 0, log_marginal
+
+    def forward(self, input, args, n_particles, test=False):
+        """
+        We have to pick a way to 
+        """
+
 class HMM_MFVI_Mine(HMM_MFVI_Yoon_Deep):
     """
     This model does something different - it computes two losses: log p(x), exactly computed using
