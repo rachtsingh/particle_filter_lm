@@ -449,7 +449,7 @@ class HMM_Joint_LSTM(HMM_EM_Layers):
             else:
                 hmm_post = log_sum_exp(T.unsqueeze(0) + current_state.unsqueeze(1), 2)
 
-            scores = self.project(torch.cat([h[0], hmm_post], 1))
+            scores = self.project(torch.cat([h[0], hmm_post.exp()], 1))
             NLL += nn.CrossEntropyLoss(size_average=False)(scores, input[i])
 
             # feed information from the current state into the next prediction (i.e. teacher-forcing)
