@@ -237,6 +237,7 @@ class HMMInference(HMM_EM):
         args.anneal = 1.
         total_loss = 0
         total_log_marginal = 0
+        total_nll = 0
         total_resamples = 0
         batch_idx = 0
         total_tokens = 0
@@ -246,9 +247,10 @@ class HMMInference(HMM_EM):
                 batch = batch.cuda()
             batch = batch.squeeze(0).t().contiguous()
             data = Variable(batch)  # squeeze for 1 billion
-            elbo, _, _, resamples = self.forward(data, args, num_importance_samples, test=True)
+            elbo, nll, _, resamples = self.forward(data, args, num_importance_samples, test=True)
             total_log_marginal += self.eval_log_marginal(batch).sum()
             total_loss += elbo.detach().data
+            total_nll += nll
             total_tokens += (data.size()[0] * data.size()[1])
             total_resamples += resamples
             batch_idx += 1
@@ -262,7 +264,7 @@ class HMMInference(HMM_EM):
         else:
             total_loss = total_loss[0]
 
-        return total_loss / total_tokens, total_log_marginal / total_tokens
+        return total_loss / total_tokens, total_nll / total_tokens, total_log_marginal / total_tokens
 
     def train_epoch(self, train_data, optimizer, epoch, args, num_importance_samples):
         self.train()
@@ -270,18 +272,18 @@ class HMMInference(HMM_EM):
 
         def train_loop(profile=False):
             total_loss = 0
+            total_nll = 0
             total_tokens = 0
             total_resamples = 0
             batch_idx = 0
 
             # for pretty printing the loss in each chunk
             last_chunk_loss = 0
+            last_chunk_nll = 0
             last_chunk_tokens = 0
             last_chunk_resamples = 0
 
             for i, batch in enumerate(train_data):
-                if i > 1000:
-                    break
                 if args.cuda:
                     batch = batch.cuda()
                 data = Variable(batch.squeeze(0).t().contiguous())  # squeeze for 1 billion
@@ -296,11 +298,12 @@ class HMMInference(HMM_EM):
                 loss.backward()
                 # torch.nn.utils.clip_grad_norm(self.parameters(), 0.01)
                 optimizer.step()
-                
+
                 if VERSION[1]:
                     total_loss += elbo.detach().data.item()
                 else:
                     total_loss += elbo.detach().data[0]
+                total_nll += NLL
                 total_tokens += tokens
                 total_resamples += resamples
 
@@ -308,13 +311,17 @@ class HMMInference(HMM_EM):
                 if batch_idx % args.log_interval == 0 and batch_idx > 0 and not args.quiet:
                     l = loss.data.item() if VERSION[1] else loss.data[0]
                     chunk_loss = total_loss - last_chunk_loss
+                    chunk_nll = total_nll - last_chunk_nll
                     chunk_tokens = total_tokens - last_chunk_tokens
                     chunk_resamples = (total_resamples - last_chunk_resamples) / args.log_interval
                     print_in_epoch_summary(epoch, batch_idx, args.batch_size, dataset_size,
                                            l, NLL / tokens,
-                                           {'Chunk Loss': chunk_loss / chunk_tokens, 'resamples': chunk_resamples},
+                                           {'Chunk Loss': chunk_loss / chunk_tokens,
+                                            'resamples': chunk_resamples,
+                                            'Chunk NLL': chunk_nll / chunk_tokens},
                                            tokens, "anneal={:.2f}".format(args.anneal))
                     last_chunk_loss = total_loss
+                    last_chunk_nll = total_nll
                     last_chunk_tokens = total_tokens
                     last_chunk_resamples = total_resamples
                 batch_idx += 1  # because no cheap generator smh
@@ -538,7 +545,7 @@ class HMM_MFVI_Yoon(HMM_MFVI):
     """
     def forward(self, input, args, n_particles, test=False):
         """
-        If n_particles != 1, this the IWAE estimator
+        If n_particles != 1, this the IWAE estimator, which doesn't make sense here
         """
         n_particles = 1
         T = F.log_softmax(self.T, 0)  # NOTE: in log-space
@@ -600,3 +607,73 @@ class HMM_MFVI_Yoon_Deep(HMM_MFVI_Yoon):
         self.logits = nn.Sequential(nn.Linear(2 * self.nhid, self.nhid),
                                     nn.ReLU(),
                                     nn.Linear(self.nhid, self.z_dim))
+
+
+class HMM_MFVI_Mine(HMM_MFVI_Yoon_Deep):
+    """
+    This model does something different - it computes two losses: log p(x), exactly computed using
+    the forward-backward algorithm, and KL(p(z|x) || q(z)) - i.e. it tries to fit the approximate posterior
+    to the true posterior. Why do this instead of using the exact posterior everywhere? Because we think
+    downstream we can optimize the approximate posterior.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super(HMM_MFVI_Mine, self).__init__(*args, **kwargs)
+        # self.encoder = torch.nn.LSTM(self.word_dim, self.nhid, 2, dropout=0, bidirectional=True)
+
+    def forward_backward(self, input, stop=False):
+        """
+        Modify the forward-backward to compute beta[t], since we need that
+        """
+        input = input.long()
+
+        seq_len, batch_size = input.size()
+        alpha = [None for i in range(seq_len)]
+        beta = [None for i in range(seq_len)]
+
+        T = F.log_softmax(self.T, 0)
+        pi = F.log_softmax(self.pi, 0)
+        emit = self.calc_emit()
+
+        # forward pass
+        alpha[0] = self.log_prob(input[0], (emit,)) + pi.view(1, -1)
+        beta[-1] = Variable(torch.zeros(batch_size, self.z_dim))
+
+        if T.is_cuda:
+            beta[-1] = beta[-1].cuda()
+
+        for t in range(1, seq_len):
+            logprod = alpha[t - 1].unsqueeze(2).expand(batch_size, self.z_dim, self.z_dim) + T.t().unsqueeze(0)
+            alpha[t] = self.log_prob(input[t], (emit,)) + log_sum_exp(logprod, 1)
+
+        # keep around for now, but unnecessary in our models
+        for t in range(seq_len - 2, -1, -1):
+            beta[t] = log_sum_exp(T.unsqueeze(0) +
+                                  beta[t + 1].unsqueeze(2) +
+                                  F.embedding(input[t + 1], emit).unsqueeze(2), 1)
+
+        log_marginal = log_sum_exp(alpha[-1] + beta[-1], dim=-1)
+
+        return [alpha[i] + beta[i] - log_marginal.unsqueeze(1) for i in range(seq_len)], 0, log_marginal
+
+    def forward(self, input, args, n_particles, test=False):
+        if test:
+            return super(HMM_MFVI_Mine, self).forward(input, args, n_particles, test)
+
+        seq_len, batch_sz = input.size()
+        emb = self.inp_embedding(input)
+        hidden = self.init_hidden(batch_sz, self.nhid, 2)  # bidirectional
+        hidden_states, (_, _) = self.encoder(emb, hidden)
+
+        log_posterior, _, log_marginal = self.forward_backward(input, stop=not test)
+
+        KL = 0
+        for i in range(seq_len):
+            log_post = Variable(log_posterior[i].data)
+            logits = F.log_softmax(self.logits(hidden_states[i]), 1)  # log q(z_i)
+            KL += (logits.exp() * (logits - log_post)).sum(1)
+
+        loss = -log_marginal + KL
+
+        # now, we calculate the final log-marginal estimator
+        return loss.sum(), -log_marginal.data.sum(), (seq_len * batch_sz), 0

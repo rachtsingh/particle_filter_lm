@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from itertools import product
 from torch import nn
+from torch.optim.lr_scheduler import StepLR, ReduceLROnPlateau  # noqa: F401
 import pdb  # noqa: F401
 
 from src.utils import get_sha, VERSION
@@ -23,7 +24,7 @@ parser.add_argument('--inference', type=str, default='vi',
                     help='which inference method to use (vi, em)')
 parser.add_argument('--model', type=str, default='hmm_em',
                     help='which generative model to use (hmm_vi, hmm_em, hmm_deep_em, hmm_deep_vi, '
-                                                        'hmm_margin_vi, hmm_mfvi)')
+                                                        'hmm_margin_vi, hmm_mfvi)')  # noqa: E127
 parser.add_argument('--load-hmm', type=str,
                     help='which PyTorch file to load the HMM from, if any')
 parser.add_argument('--word-dim', type=int, default=300,
@@ -174,6 +175,10 @@ elif args.inference == 'em':
         model = hmm.HMM_EM(args.z_dim, args.x_dim)
     elif args.model == 'hmm_deep_em':
         model = hmm.HMM_EM_Layers(args.z_dim, args.x_dim, args.hidden)
+elif args.inference == 'mix':
+    if args.model == 'hmm_mfvi_mine':
+        model = hmm_filter.HMM_MFVI_Mine(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
+                                         word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
 
 if args.embedding is not None and model.load_embedding:
     data = torch.load(args.embedding)
@@ -235,6 +240,7 @@ def flush():
     if args.dump_param_traj is not None:
         np.savez(args.dump_param_traj, T=T_traj, pi=pi_traj, emit=emit_traj)
 
+
 if args.inference == 'vi' and args.load_hmm:
     model.T.requires_grad = False
     model.pi.requires_grad = False
@@ -248,12 +254,13 @@ if args.load_model:
 
 # At any point you can hit Ctrl + C to break out of training early.
 try:
-    inference_optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
+    scheduler = ReduceLROnPlateau(optimizer, factor=0.3, patience=1, verbose=True, threshold=0.1, min_lr=1e-3)
 
-    val_loss, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
-    print("-" * 89)
-    print("-ELBO: {}, ELBO ppl: {}, val before opt: {}".format(val_loss, np.exp(val_loss), np.exp(-true_marginal)))
-    print("-" * 89)
+    # val_loss, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
+    # print("-" * 89)
+    # print("-ELBO: {}, ELBO ppl: {}, val before opt: {}".format(val_loss, np.exp(val_loss), np.exp(-true_marginal)))
+    # print("-" * 89)
 
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()
@@ -262,28 +269,30 @@ try:
             args.anneal = args.kl_anneal_start
 
         # let's only optimize inference in the first few steps
-        if args.inference == 'vi' and args.load_hmm:
-            if epoch < 100:
-                optimizer = inference_optimizer
-            elif epoch == 100:
-                model.T.requires_grad = True
-                model.pi.requires_grad = True
-                model.emit.requires_grad = True
-                if hasattr(model, 'hidden'):
-                    model.hidden.requires_grad = True
-                all_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-                optimizer = all_optimizer
-            else:
-                optimizer = all_optimizer
-        else:
-            optimizer = inference_optimizer  # because that's everything, it's ok here
+        # if args.inference == 'vi' and args.load_hmm:
+        #     if epoch < 100:
+        #         optimizer = inference_optimizer
+        #     elif epoch == 100:
+        #         model.T.requires_grad = True
+        #         model.pi.requires_grad = True
+        #         model.emit.requires_grad = True
+        #         if hasattr(model, 'hidden'):
+        #             model.hidden.requires_grad = True
+        #         all_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+        #         optimizer = all_optimizer
+        #     else:
+        #         optimizer = all_optimizer
+        # else:
+        #     optimizer = inference_optimizer  # because that's everything, it's ok here
 
         train_loss = model.train_epoch(train_loader, optimizer, epoch, args, args.num_importance_samples)
 
         # let's ignore ASGD for now
-        val_loss, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
+        val_loss, val_nll, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
+        scheduler.step(val_loss)
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            flush()
         if not args.quiet:
             if val_loss < 10:
                 ppl = np.exp(-true_marginal)
@@ -291,8 +300,8 @@ try:
                 ppl = np.inf
 
             print('-' * 80)
-            print('| end of epoch {:3d} | time: {:5.2f}s | valid ELBO {:5.2f} | true marginal {:5.2f} | PPL: {:5.2f}'
-                  ''.format(epoch, (time.time() - epoch_start_time), val_loss, true_marginal, ppl))
+            print('| end of epoch {:3d} | time: {:5.2f}s | valid ELBO {:5.2f} | valid NLL {:5.2f} | true marginal {:5.2f} | PPL: {:5.2f}'
+                  ''.format(epoch, (time.time() - epoch_start_time), val_loss, val_nll, true_marginal, ppl))
             print('-' * 80)
 
         if args.dump_param_traj:
