@@ -24,7 +24,7 @@ parser.add_argument('--inference', type=str, default='vi',
                     help='which inference method to use (vi, em)')
 parser.add_argument('--model', type=str, default='hmm_em',
                     help='which generative model to use (hmm_vi, hmm_em, hmm_deep_em, hmm_deep_vi, '
-                                                        'hmm_margin_vi, hmm_mfvi)')
+                                                        'hmm_margin_vi, hmm_mfvi)')  # noqa: E127
 parser.add_argument('--load-hmm', type=str,
                     help='which PyTorch file to load the HMM from, if any')
 parser.add_argument('--word-dim', type=int, default=300,
@@ -240,6 +240,7 @@ def flush():
     if args.dump_param_traj is not None:
         np.savez(args.dump_param_traj, T=T_traj, pi=pi_traj, emit=emit_traj)
 
+
 if args.inference == 'vi' and args.load_hmm:
     model.T.requires_grad = False
     model.pi.requires_grad = False
@@ -287,7 +288,7 @@ try:
         train_loss = model.train_epoch(train_loader, optimizer, epoch, args, args.num_importance_samples)
 
         # let's ignore ASGD for now
-        val_loss, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
+        val_loss, val_nll, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
         scheduler.step(val_loss)
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -299,8 +300,8 @@ try:
                 ppl = np.inf
 
             print('-' * 80)
-            print('| end of epoch {:3d} | time: {:5.2f}s | valid ELBO {:5.2f} | true marginal {:5.2f} | PPL: {:5.2f}'
-                  ''.format(epoch, (time.time() - epoch_start_time), val_loss, true_marginal, ppl))
+            print('| end of epoch {:3d} | time: {:5.2f}s | valid ELBO {:5.2f} | valid NLL {:5.2f} | true marginal {:5.2f} | PPL: {:5.2f}'
+                  ''.format(epoch, (time.time() - epoch_start_time), val_loss, val_nll, true_marginal, ppl))
             print('-' * 80)
 
         if args.dump_param_traj:
