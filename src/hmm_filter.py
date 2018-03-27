@@ -540,6 +540,7 @@ class HMM_MFVI_Yoon(HMM_MFVI):
         """
         If n_particles != 1, this the IWAE estimator
         """
+        n_particles = 1
         T = F.log_softmax(self.T, 0)  # NOTE: in log-space
         pi = F.log_softmax(self.pi, 0)  # in log-space, intentionally
         emit = self.calc_emit()  # also in log-space
