@@ -31,7 +31,7 @@ def main():
     for path in files:
         plots += parse_path(path)
     for label, arr in plots:
-
+        
 
 
 main()

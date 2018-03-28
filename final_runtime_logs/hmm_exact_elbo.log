@@ -1,0 +1,63 @@
+running run_vi_exp.py --dataset 1billion --model ablation --word-dim 300 --nhid 64 --z-dim 150 --x-dim 20004 --no-scheduler --train-method exact_elbo --hidden 150
+sha: 7457c31979bb660fa67eb8f3293e64b8b5cfa2b8
+('args:', Namespace(base_filename=None, batch_size=1, clip=3.0, cuda=True, dataset='1billion', embedding=None, epochs=1000, filter=False, hidden=150, kl_anneal_delay=4, kl_anneal_rate=0.0001, kl_anneal_start=0.0001, load_hmm=None, load_inference=None, load_model=None, load_z_gru=None, log_interval=500, lr=0.01, lstm_sz=200, model='ablation', nhid=64, no_cuda=False, no_scheduler=True, num_importance_samples=5, print_best=False, prof=None, quiet=False, save=None, save_params=None, seed=1111, slurm_id=None, temp=0.3, temp_prior=0.35, train_method='exact_elbo', word_dim=300, x_dim=20004, z_dim=150))
+('model total parameters:', 9252348)
+('model parameter breakdown:', (3045750, 6206598))
+model architecture:
+HMM_Gradients(
+  (inp_embedding): Embedding(20004, 300)
+  (encoder): LSTM(300, 64, bidirectional=True)
+  (enc): ModuleList(
+    (0): Embedding(20004, 300)
+    (1): LSTM(300, 64, bidirectional=True)
+  )
+  (z_decoder): None
+  (logits): Sequential(
+    (0): Linear(in_features=128, out_features=64, bias=True)
+    (1): ReLU()
+    (2): Linear(in_features=64, out_features=150, bias=True)
+  )
+)
+ignoring scheduler, lr is fixed
+anneal: 0.000
+--------------------------------------------------------------------------------
+| end of epoch   1 | time: 366.60s | valid ELBO  5.69 | valid NLL  3.80 | PPL: 296.14 | true PPL: 280.02
+--------------------------------------------------------------------------------
+anneal: 0.000
+--------------------------------------------------------------------------------
+| end of epoch   2 | time: 366.20s | valid ELBO  5.60 | valid NLL  3.58 | PPL: 269.83 | true PPL: 253.01
+--------------------------------------------------------------------------------
+anneal: 0.000
+--------------------------------------------------------------------------------
+| end of epoch   3 | time: 366.23s | valid ELBO  5.56 | valid NLL  3.51 | PPL: 259.21 | true PPL: 242.44
+--------------------------------------------------------------------------------
+anneal: 0.000
+--------------------------------------------------------------------------------
+| end of epoch   4 | time: 366.10s | valid ELBO  5.55 | valid NLL  3.48 | PPL: 255.99 | true PPL: 239.83
+--------------------------------------------------------------------------------
+anneal: 0.000
+--------------------------------------------------------------------------------
+| end of epoch   5 | time: 366.60s | valid ELBO  5.54 | valid NLL  3.47 | PPL: 255.01 | true PPL: 238.18
+--------------------------------------------------------------------------------
+anneal: 0.000
+--------------------------------------------------------------------------------
+| end of epoch   6 | time: 367.13s | valid ELBO  5.54 | valid NLL  3.46 | PPL: 254.55 | true PPL: 238.25
+--------------------------------------------------------------------------------
+anneal: 0.000
+--------------------------------------------------------------------------------
+| end of epoch   7 | time: 367.22s | valid ELBO  5.55 | valid NLL  3.45 | PPL: 256.77 | true PPL: 238.05
+--------------------------------------------------------------------------------
+anneal: 0.000
+--------------------------------------------------------------------------------
+| end of epoch   8 | time: 366.98s | valid ELBO  5.55 | valid NLL  3.45 | PPL: 257.24 | true PPL: 239.46
+--------------------------------------------------------------------------------
+anneal: 0.000
+--------------------------------------------------------------------------------
+| end of epoch   9 | time: 367.09s | valid ELBO  5.56 | valid NLL  3.45 | PPL: 258.93 | true PPL: 239.74
+--------------------------------------------------------------------------------
+anneal: 0.000
+--------------------------------------------------------------------------------
+| end of epoch  10 | time: 367.01s | valid ELBO  5.56 | valid NLL  3.45 | PPL: 258.47 | true PPL: 239.85
+--------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------
+Exiting from training early

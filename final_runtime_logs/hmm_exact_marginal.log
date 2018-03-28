@@ -1,0 +1,29 @@
+running run_vi_exp.py --dataset 1billion --model ablation --word-dim 300 --nhid 64 --z-dim 150 --x-dim 20004 --no-scheduler --train-method exact_marginal --hidden 150
+sha: 7457c31979bb660fa67eb8f3293e64b8b5cfa2b8
+('args:', Namespace(base_filename=None, batch_size=1, clip=3.0, cuda=True, dataset='1billion', embedding=None, epochs=1000, filter=False, hidden=150, kl_anneal_delay=4, kl_anneal_rate=0.0001, kl_anneal_start=0.0001, load_hmm=None, load_inference=None, load_model=None, load_z_gru=None, log_interval=500, lr=0.01, lstm_sz=200, model='ablation', nhid=64, no_cuda=False, no_scheduler=True, num_importance_samples=5, print_best=False, prof=None, quiet=False, save=None, save_params=None, seed=1111, slurm_id=None, temp=0.3, temp_prior=0.35, train_method='exact_marginal', word_dim=300, x_dim=20004, z_dim=150))
+('model total parameters:', 9252348)
+('model parameter breakdown:', (3045750, 6206598))
+model architecture:
+HMM_Gradients(
+  (inp_embedding): Embedding(20004, 300)
+  (encoder): LSTM(300, 64, bidirectional=True)
+  (enc): ModuleList(
+    (0): Embedding(20004, 300)
+    (1): LSTM(300, 64, bidirectional=True)
+  )
+  (z_decoder): None
+  (logits): Sequential(
+    (0): Linear(in_features=128, out_features=64, bias=True)
+    (1): ReLU()
+    (2): Linear(in_features=64, out_features=150, bias=True)
+  )
+)
+ignoring scheduler, lr is fixed
+anneal: 0.000
+--------------------------------------------------------------------------------
+| end of epoch   1 | time: 277.57s | valid ELBO -5.36 | valid NLL  0.00 | PPL:  0.00 | true PPL: 212.75
+--------------------------------------------------------------------------------
+anneal: 0.000
+--------------------------------------------------------------------------------
+| end of epoch   2 | time: 277.42s | valid ELBO -5.30 | valid NLL  0.00 | PPL:  0.00 | true PPL: 200.94
+--------------------------------------------------------------------------------
