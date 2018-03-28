@@ -106,6 +106,8 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
             loss, tokens = self.sampled_elbo(input, args, n_particles, emb, hidden_states)
             optimizer.zero_grad()
             self.sampled_iwae(input, args, n_particles, loss, tokens)
+        elif args.train_method == 'sampled_filter':
+            self.sampled_filter(input, args, n_particles, emb, hidden_states)
         optimizer.step()
 
     def collect_gradients(self, method, optimizer, clean=False):
@@ -354,6 +356,85 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
             return self.exact_evaluate(data_source, args, num_importance_samples)
         else:
             return super(HMM_Gradients, self).evaluate(data_source, args, num_importance_samples)
+
+    #
+    # SAMPLED PARTICLE FILTER METHOD
+    #
+    def sampled_filter(self, input, args, n_particles, emb, hidden_states):
+        T = F.log_softmax(self.T, 0)  # NOTE: in log-space
+        pi = F.log_softmax(self.pi, 0)  # NOTE: in log-space
+        emit = self.calc_emit()
+
+        # run the input and teacher-forcing inputs through the embedding layers here
+        seq_len, batch_sz = input.size()
+        hidden_states = hidden_states.repeat(1, n_particles, 1)
+
+        nlls = hidden_states.data.new(seq_len, batch_sz * n_particles)
+        loss = 0
+
+        accumulated_weights = -math.log(n_particles)  # will contain log w_{t - 1}
+        resamples = 0
+
+        # in log probability space
+        prior_probs = pi.unsqueeze(0).expand(batch_sz * n_particles, self.z_dim)
+
+        for i in range(seq_len):
+            # the approximate posterior comes from the same thing as before
+            logits = F.log_softmax(self.logits(hidden_states[i]), 1)
+
+            p = RelaxedOneHotCategorical(temperature=self.temp_prior, probs=prior_probs)
+            q = RelaxedOneHotCategorical(temperature=self.temp, logits=logits)
+            z = q.rsample()
+
+            # now, compute the log-likelihood of the data given this z-sample
+            emission = F.embedding(input[i].repeat(n_particles), emit)
+            NLL = -log_sum_exp(emission + log_probs, 1)
+            nlls[i] = NLL.data
+
+            # compute the weight using `reweight` on page (4)
+            f_term = p.log_prob(z)  # prior
+            r_term = q.log_prob(z)  # proposal
+            alpha = -NLL + (f_term - r_term)
+
+            wa = accumulated_weights + alpha.view(n_particles, batch_sz)
+
+            Z = log_sum_exp(wa, dim=0)  # line 7
+
+            loss += Z  # line 8
+            accumulated_weights = F.log_softmax(wa, dim=0)  # line 9
+
+            # sample ancestors, and reindex everything
+            if args.filter:
+                pdb.set_trace()
+                probs = accumulated_weights.data.exp()
+                probs += 0.01
+                probs = probs / probs.sum(0, keepdim=True)
+                effective_sample_size = 1./probs.pow(2).sum(0)
+
+                # probs is [n_particles, batch_sz]
+                # ancestors [2 x 15] = [[0, 0, 0, ..., 0], [0, 1, 2, 3, ...]]
+                # offsets   [2 x 15] = [[0, 0, 0, ..., 0], [1, 1, 1, 1, ...]]
+
+                # resample / RSAMP
+                if ((effective_sample_size / n_particles) < 0.3).sum() > 0:
+                    resamples += 1
+                    ancestors = torch.multinomial(probs.transpose(0, 1), n_particles, True)
+
+                    # now, reindex, which is the most important thing
+                    offsets = n_particles * torch.arange(batch_sz).unsqueeze(1).repeat(1, n_particles).long()
+                    if ancestors.is_cuda:
+                        offsets = offsets.cuda()
+                    unrolled_idx = Variable(ancestors + offsets).view(-1)
+                    z = torch.index_select(z, 0, unrolled_idx)
+
+                    # reset accumulated_weights
+                    accumulated_weights = -math.log(n_particles)  # will contain log w_{t - 1}
+
+            if i != seq_len - 1:
+                # now in probability space
+                prior_probs = (T.unsqueeze(0) * z.unsqueeze(1)).sum(2)
+
+        (-loss.sum()/(seq_len * batch_sz * n_particles)).backward()
 
     # override because otherwise it's slow
     def exact_evaluate(self, data_source, args, num_importance_samples=3):
