@@ -289,7 +289,7 @@ try:
                 true_marginal_ppl = np.exp(-true_marginal)
             else:
                 ppl = np.inf
-                true_marginal_ppol = np.inf
+                true_marginal_ppl = np.inf
 
             print('-' * 80)
             print('| end of epoch {:3d} | time: {:5.2f}s | valid ELBO {:5.2f} | valid NLL {:5.2f} | PPL: {:5.2f} | true PPL: {:5.2f}'

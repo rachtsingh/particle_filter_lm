@@ -54,6 +54,10 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
         return 0, 0
 
     def forward(self, input, args, n_particles, test, optimizer=None, i=0, epoch=0):
+        # avoid precomputation because it's expensive
+        if args.train_method == 'exact_marginal':
+            return self.switch_methods(input, args, n_particles, None, None, optimizer)
+
         # precompute the encoder outputs, so we only have to do this once
         seq_len, batch_sz = input.size()
         emb = self.inp_embedding(input)
@@ -250,6 +254,11 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
         loss = -log_marginal.sum() / (seq_len * batch_sz)
         loss.backward(retain_graph=True)
 
+    def eval_exact_marginal(self, input):
+        seq_len, batch_sz = input.size()
+        _, _, log_marginal = self.forward_backward(input, speedup=True)
+        return -log_marginal.sum(), 0, (seq_len * batch_sz), 0
+
     def forward_backward(self, input, speedup=False):
         """
         Modify the forward-backward to compute beta[t], since we need that for checking the sampling in the particle filter case
@@ -338,3 +347,28 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
         seq_len, batch_sz = input.size()
         loss = -log_sum_exp(-loss.view(n_particles, batch_sz), 0) + math.log(n_particles)
         (loss.sum()/tokens).backward(retain_graph=True)
+
+    def evaluate(self, data_source, args, num_importance_samples=3):
+        if args.train_method == 'exact_marginal':
+            return self.exact_evaluate(data_source, args, num_importance_samples)
+        else:
+            return super(HMM_Gradients, self).evaluate(self, data_source, args, num_importance_samples)
+
+    # override because otherwise it's slow
+    def exact_evaluate(self, data_source, args, num_importance_samples=3):
+        self.eval()
+        total_log_marginal = 0
+        total_tokens = 0
+
+        for batch in data_source:
+            if args.cuda:
+                batch = batch.cuda()
+            batch = batch.squeeze(0).t().contiguous()
+            data = Variable(batch)  # squeeze for 1 billion
+            total_log_marginal += self.eval_log_marginal(batch).sum()
+            total_tokens += (data.size()[0] * data.size()[1])
+
+        if args.dataset != '1billion':
+            total_tokens = 1
+
+        return total_log_marginal / total_tokens, 0, total_log_marginal / total_tokens
