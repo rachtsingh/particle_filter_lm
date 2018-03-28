@@ -82,6 +82,7 @@ parser.add_argument('--embedding', type=str, default=None,
                     help='Which file to load word embeddings from')
 parser.add_argument('--load-model', type=str, default=None,
                     help='Which model file to load if any')
+parser.add_argument('--no-scheduler', action='store_true')
 args = parser.parse_args()
 
 # Set the random seed manually for reproducibility.
@@ -255,7 +256,10 @@ if args.load_model:
 # At any point you can hit Ctrl + C to break out of training early.
 try:
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
-    scheduler = ReduceLROnPlateau(optimizer, factor=0.3, patience=1, verbose=True, threshold=0.1, min_lr=1e-3)
+    if not args.no_scheduler:
+        scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=1, verbose=True, threshold=0.01, min_lr=1e-5)
+    else:
+        print("ignoring scheduler, lr is fixed")
 
     # val_loss, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
     # print("-" * 89)
@@ -289,7 +293,10 @@ try:
 
         # let's ignore ASGD for now
         val_loss, val_nll, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
-        scheduler.step(val_loss)
+
+        if not args.no_scheduler:
+            scheduler.step(val_loss)
+
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             flush()

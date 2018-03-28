@@ -65,7 +65,7 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
 
         if args.train_method:
             # not trying to get gradients, just try to dump the trajectory
-            return self.switch_methods(input, args, emb, hidden_states)
+            return self.switch_methods(input, args, n_particles, emb, hidden_states, optimizer)
 
         if i % 10 == 0:
             self.exact_marginal(input)
@@ -87,6 +87,20 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
         if i % 10 == 0:
             self.collect_gradients('exact_elbo', optimizer, clean=False)
             self.save_gradients(epoch, i, args.base_filename)
+        optimizer.step()
+
+    def switch_methods(self, input, args, n_particles, emb, hidden_states, optimizer):
+        if args.train_method == 'exact_elbo':
+            loss, _, tokens, _ = self.exact_elbo(input, args, False, emb, hidden_states)
+            (loss/tokens).backward()
+        elif args.train_method == 'exact_marginal':
+            self.exact_marginal(input)
+        elif args.train_method == 'sampling_elbo':
+            self.sampled_elbo(input, args, n_particles, emb, hidden_states)
+        elif args.train_method == 'sampling_iwae':
+            loss, tokens = self.sampled_elbo(input, args, n_particles, emb, hidden_states)
+            optimizer.zero_grad()
+            self.sampled_iwae(input, args, n_particles, loss, tokens)
         optimizer.step()
 
     def collect_gradients(self, method, optimizer, clean=False):
@@ -126,9 +140,6 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
 
         # now compute the statistics to save
         output = {}
-
-        from matplotlib import pyplot as plt
-        import seaborn as sns
 
         for method in self.gradients.keys():
             gen_bias = 0

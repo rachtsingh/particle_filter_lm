@@ -92,6 +92,7 @@ parser.add_argument('--load-z-gru', type=str, default=None,
                     help='Which file to use to initialize the p(z) GRU')
 parser.add_argument('--base-filename', type=str, default=None)
 parser.add_argument('--no-scheduler', action='store_true')
+parser.add_argument('--train-method', type=str, default=None)
 args = parser.parse_args()
 
 # Set the random seed manually for reproducibility.
