@@ -284,7 +284,10 @@ try:
             best_val_loss = val_loss
             flush()
         if not args.quiet:
-            if val_loss < 10:
+            if args.dataset != '1billion':
+                ppl = val_loss
+                true_marginal_ppl = -true_marginal
+            elif val_loss < 10:
                 ppl = np.exp(val_loss)
                 true_marginal_ppl = np.exp(-true_marginal)
             else:

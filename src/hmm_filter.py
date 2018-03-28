@@ -508,7 +508,7 @@ class HMM_MFVI(HMM_VI_Layers):
             logits = self.logits(hidden_states[i])
 
             # build the next z sample
-            q = OneHotCategorical(logits=logits)
+            q = RelaxedOneHotCategorical(temperature=Variable(torch.Tensor([args.temp]).cuda()), logits=logits)
             z = q.sample()
 
             lse = log_sum_exp(logits, dim=1).view(-1, 1)

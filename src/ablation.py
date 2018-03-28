@@ -40,6 +40,7 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
     """
     def __init__(self, *args, **kwargs):
         super(HMM_Gradients, self).__init__(*args, **kwargs)
+        print(self.temp, self.temp_prior)
         self.gradients = {}
         self.storage = {}
 
@@ -99,9 +100,9 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
             (loss/tokens).backward()
         elif args.train_method == 'exact_marginal':
             self.exact_marginal(input)
-        elif args.train_method == 'sampling_elbo':
+        elif args.train_method == 'sampled_elbo':
             self.sampled_elbo(input, args, n_particles, emb, hidden_states)
-        elif args.train_method == 'sampling_iwae':
+        elif args.train_method == 'sampled_iwae':
             loss, tokens = self.sampled_elbo(input, args, n_particles, emb, hidden_states)
             optimizer.zero_grad()
             self.sampled_iwae(input, args, n_particles, loss, tokens)
@@ -318,9 +319,9 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
             logits = self.logits(hidden_states[i])
 
             # build the next z sample
-            # p = RelaxedOneHotCategorical(probs=prior_probs, temperature=Variable(torch.Tensor([args.temp_prior]).cuda()))
-            q = RelaxedOneHotCategorical(temperature=Variable(torch.Tensor([args.temp]).cuda()), logits=logits)
-            z = q.sample()
+            p = RelaxedOneHotCategorical(temperature=self.temp_prior, probs=prior_probs)
+            q = RelaxedOneHotCategorical(temperature=self.temp, logits=logits)
+            z = q.rsample()
 
             log_probs = F.log_softmax(logits, dim=1)
 
@@ -331,7 +332,7 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
 
             NLL = -log_sum_exp(emission + log_probs, 1)
             nlls[i] = NLL.data
-            KL = (log_probs.exp() * (log_probs - (prior_probs + 1e-16).log())).sum(1)
+            KL = q.log_prob(z) - p.log_prob(z)  # pretty inexact
             loss += (NLL + KL)
 
             if i != seq_len - 1:
@@ -352,7 +353,7 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
         if args.train_method == 'exact_marginal':
             return self.exact_evaluate(data_source, args, num_importance_samples)
         else:
-            return super(HMM_Gradients, self).evaluate(self, data_source, args, num_importance_samples)
+            return super(HMM_Gradients, self).evaluate(data_source, args, num_importance_samples)
 
     # override because otherwise it's slow
     def exact_evaluate(self, data_source, args, num_importance_samples=3):
