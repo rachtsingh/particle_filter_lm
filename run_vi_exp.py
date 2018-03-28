@@ -16,6 +16,7 @@ from src.utils import get_sha, VERSION
 from src.hmm_dataset import create_hmm_data, HMMData
 from src.real_hmm_dataset import OneBillionWord
 from src import vi_filter
+from src import ablation
 
 parser = argparse.ArgumentParser(description='Demonstration of Sequential Latent VI for HMMs')
 parser.add_argument('--dataset', type=str, default='1billion',
@@ -89,6 +90,7 @@ parser.add_argument('--embedding', type=str, default=None,
                     help='Which file to load word embeddings from')
 parser.add_argument('--load-z-gru', type=str, default=None,
                     help='Which file to use to initialize the p(z) GRU')
+parser.add_argument('--base-filename', type=str, default=None)
 args = parser.parse_args()
 
 # Set the random seed manually for reproducibility.
@@ -178,6 +180,8 @@ elif args.model == 'hmm_lstm_sep':
 elif args.model == 'hmm_lstm_joint':
     model = vi_filter.HMM_Joint_LSTM(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, lstm_hidden_size=args.lstm_sz,
                                      word_dim=args.word_dim, separate_opt=False)
+elif args.model == 'ablation':
+    model = ablation.HMM_Gradients(args.z_dim, args.x_dim, args.hidden, args.nhid, args.word_dim, args.temp, args.temp_prior)
 else:
     raise NotImplementedError("TODO")
 
