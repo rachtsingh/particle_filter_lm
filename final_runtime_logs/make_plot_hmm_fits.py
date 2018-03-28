@@ -19,7 +19,7 @@ def parse_path(path):
     data = np.stack(data)
     print(data)
     if path == files[0]:
-        label = r'$\operatorname{ELBO}_{\operatorname{exact}}$ -'
+        label = r'$\operatorname{ELBO}_{\operatorname{exact}}$ - '
         return [(label + 'bound PPL', data[:, 0], 'b--'),
                 (label + 'true PPL', data[:, 1], 'b-')]
     if path == files[1]:
@@ -33,7 +33,7 @@ def main():
     for path in files:
         plots += parse_path(path)
     for label, arr, f in plots:
-        plt.plot(np.arange(arr.shape[0]), arr, f, label=label)
+        plt.plot(1 + np.arange(arr.shape[0]), arr, f, label=label)
     plt.xlabel('Epochs', fontsize=18)
     plt.ylabel('Test PPL', fontsize=18)
     plt.gca().tick_params(axis='both', which='both', labelsize=16)
