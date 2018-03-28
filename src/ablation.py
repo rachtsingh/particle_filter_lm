@@ -1,15 +1,12 @@
-"""
-This is just broken out of hmm_filter.py because I'm sick of looking at that file
-"""
+# This is just broken out of hmm_filter.py because I'm sick of looking at that file
 
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from torch.autograd import Variable
-from torch.distributions import RelaxedOneHotCategorical, OneHotCategorical
+from torch.distributions import RelaxedOneHotCategorical
 import numpy as np
 import math
-import sys
 import pdb  # noqa: F401
 import gc
 from collections import defaultdict
@@ -17,7 +14,6 @@ from collections import defaultdict
 from src.utils import print_in_epoch_summary, log_sum_exp, any_nans, VERSION  # noqa: F401
 from src.locked_dropout import LockedDropout  # noqa: F401
 from src.embed_regularize import embedded_dropout  # noqa: F401
-from src.hmm import HMM_EM
 from src.utils import show_memusage  # noqa: F401
 from src.hmm_filter import HMM_MFVI_Yoon_Deep
 
@@ -31,19 +27,21 @@ def check_allocation():
                 return True
     return False
 
+
 class HMM_Gradients(HMM_MFVI_Yoon_Deep):
     """
-    This model is the main experimentation method: it follows the trajectory of the MFVI exact, but 
+    This model is the main experimentation method: it follows the trajectory of the MFVI exact, but
     for each batch it computes:
         1. gradients w.r.t. the log-marginal
         2. gradients w.r.t. the exact ELBO
-        3. gradients w.r.t. sampling-based ELBO 
+        3. gradients w.r.t. sampling-based ELBO
         4. gradients w.r.t. IWAE?
         5. gradients w.r.t. FIVO
     """
-    def __init__(self, z_dim, x_dim, hidden_size, nhid, word_dim, temp, temp_prior, params=None, *args, **kwargs):
-        super(HMM_Gradients, self).__init__(self, z_dim, x_dim, hidden_size, nhid, word_dim, temp, temp_prior, params=None, *args, **kwargs)
+    def __init__(self, *args, **kwargs):
+        super(HMM_Gradients, self).__init__(*args, **kwargs)
         self.gradients = {}
+        self.storage = {}
 
     def train_epoch(self, train_data, optimizer, epoch, args, num_importance_samples):
         self.train()
@@ -57,32 +55,37 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
 
     def forward(self, input, args, n_particles, test, optimizer=None, i=0, epoch=0):
         # precompute the encoder outputs, so we only have to do this once
+        seq_len, batch_sz = input.size()
         emb = self.inp_embedding(input)
         hidden = self.init_hidden(batch_sz, self.nhid, 2)  # bidirectional
         hidden_states, (_, _) = self.encoder(emb, hidden)
 
         if test:
-            return self.exact_elbo(input, args, n_particles, test, emb, hidden_states)
+            return self.exact_elbo(input, args, test, emb, hidden_states)
+
+        if args.train_method:
+            # not trying to get gradients, just try to dump the trajectory
+            return self.switch_methods(input, args, emb, hidden_states)
 
         if i % 10 == 0:
-            self.exact_marginal(input, args)
-            self.collect_gradients(i, 'exact_marginal', optimizer, clean=True)
+            self.exact_marginal(input)
+            self.collect_gradients('exact_marginal', optimizer, clean=True)
 
             # in a loop, collect both the sampled ELBO and the sampled PF gradients
-            for i in range(10):
-                loss = self.sampled_elbo(input, args, n_particles)
-                self.collect_gradients(i, 'sampled_elbo', optimizer, clean=True)
-                self.sampled_iwae(input, args, n_particles, loss)
-                self.collect_gradients(i, 'sampled_iwae', optimizer, clean=True)
+            for k in range(20):
+                loss, tokens = self.sampled_elbo(input, args, n_particles, emb, hidden_states)
+                self.collect_gradients('sampled_elbo', optimizer, clean=True)
+                self.sampled_iwae(input, args, n_particles, loss, tokens)
+                self.collect_gradients('sampled_iwae', optimizer, clean=True)
 
                 # particle filter goes here
 
         # now do the MFVI gradient
-        loss, _, tokens, _ = self.exact_elbo(input, args, n_particles, emb, hidden_states)
-        loss.backward()
+        loss, _, tokens, _ = self.exact_elbo(input, args, test, emb, hidden_states)
+        (loss/tokens).backward()
 
         if i % 10 == 0:
-            self.collect_gradients(i, 'exact_elbo', optimizer, clean=False)
+            self.collect_gradients('exact_elbo', optimizer, clean=False)
             self.save_gradients(epoch, i, args.base_filename)
         optimizer.step()
 
@@ -90,30 +93,102 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
         if method not in self.gradients.keys():
             self.gradients[method] = defaultdict(list)
         for name, param in self.named_parameters():
-            self.gradients[method][name].append(param.grad.data.cpu())
+            if not(param.grad is None):  # for the exact marginal estimator, there's no grad for the inference net
+                self.gradients[method][name].append(param.grad.data.clone())
         if clean:
             optimizer.zero_grad()
 
+    def get_parameter_statistics(self):
+        gen_parameters = [v for k, v in self.named_parameters() if k in ('T', 'pi', 'emit', 'hidden')]
+        inf_parameters = [v for k, v in self.named_parameters() if k not in ('T', 'pi', 'emit', 'hidden')]
+        gen_count = sum(x.size()[0] * x.size()[1] if len(x.size()) > 1 else x.size()[0] for x in gen_parameters)
+        inf_count = sum(x.size()[0] * x.size()[1] if len(x.size()) > 1 else x.size()[0] for x in inf_parameters)
+        return (gen_count, inf_count)
+
     def save_gradients(self, epoch, batch_idx, filename):
-        output = defaultdict(dict)
+        summary = defaultdict(dict)
+        gen_parameters, inf_parameters = self.get_parameter_statistics()
+        for name, _ in self.named_parameters():
+            # first we get the values out of exact_elbo and exact_marginal to understand
+            if name in ('T', 'pi', 'emit', 'hidden'):
+                summary['exact_marginal'][name] = (self.gradients['exact_marginal'][name][0], None)
+            summary['exact_elbo'][name] = (self.gradients['exact_elbo'][name][0], None)
+
+            # now the others
+            for method in self.gradients.keys():
+                if method in ('exact_elbo', 'exact_marginal'):
+                    pass
+                for key, values in self.gradients[method].items():
+                    n = len(values)
+                    mean = sum(values)/n
+                    var = (sum([(x - mean).pow(2) for x in values])/n).sqrt()
+                    summary[method][key] = (mean, var)  # these are still high dimensional CUDA vectors
+
+        # now compute the statistics to save
+        output = {}
+
+        from matplotlib import pyplot as plt
+        import seaborn as sns
+
         for method in self.gradients.keys():
-            for key, values in self.gradients[method].items():
-                n = len(values)
-                mean = sum(values)/n
-                var = sum([(x - mean).pow(2) for x in values])/n
-                output[method][key] = (mean, var)
+            gen_bias = 0
+            gen_bias_elbo = 0  # based on the exact elbo
+            inf_bias = 0
+            gen_var = 0
+            inf_var = 0
+            gen_snr = 0
+            gen_elbo_snr = 0
+            inf_snr = 0
+
+            gen_counted = 0.01
+            inf_counted = 0.01
+
+            for name, _ in self.named_parameters():
+                if method == 'exact_marginal':
+                    continue
+                mean, var = summary[method][name]
+
+                # we have to mask out values for which the variance is 0
+                msk = (var.abs() > 1e-12)
+                if name in ('T', 'pi', 'emit', 'hidden'):
+                    gen_bias += (mean - summary['exact_marginal'][name][0]).pow(2).sum()
+                    gen_bias_elbo += (mean - summary['exact_elbo'][name][0]).pow(2).sum()
+                    gen_var += var.sum()
+                    gen_snr += ((mean[msk] - summary['exact_marginal'][name][0][msk]).abs() / var[msk]).sum()
+                    gen_elbo_snr += ((mean[msk] - summary['exact_elbo'][name][0][msk]).abs() / var[msk]).sum()
+                    gen_counted += msk.sum()
+                else:
+                    inf_bias += (mean - summary['exact_elbo'][name][0]).pow(2).sum()
+                    inf_var += var.sum()
+                    inf_snr += ((mean[msk] - summary['exact_elbo'][name][0][msk]).abs() / var[msk]).sum()
+                    inf_counted += msk.sum()
+
+            # scale down by the norm of the difference
+            gen_bias = np.sqrt(gen_bias / gen_parameters)  # L2 norm of difference
+            inf_bias = np.sqrt(inf_bias / inf_parameters)
+            gen_bias_elbo = np.sqrt(gen_bias_elbo / gen_parameters)
+            gen_var = (gen_var / gen_parameters)  # still squared L2 norm of difference
+            inf_var = (inf_var / inf_parameters)
+            gen_snr /= (gen_counted)
+            gen_elbo_snr /= (gen_counted)
+            inf_snr /= (inf_counted)
+
+            output[method] = (gen_bias, gen_bias_elbo, inf_bias, gen_var, inf_var, gen_snr, gen_elbo_snr, inf_snr)
+
+        # save everything
         mode = 'w' if VERSION[0] == 2 else 'wb'
         path = "{}_{}_{}.pt".format(filename, epoch, batch_idx)
         with open(path, mode) as f:
             torch.save(output, f)
-            print("saved gradients to " + path)
+            # print("saved gradients to " + path)
+        self.gradients = {}
+        self.storage[path] = output
 
     # below this is inference methods / techniques
 
     #
     # EXACT ELBO
     #
-
     def exact_elbo(self, input, args, test, emb, hidden_states):
         seq_len, batch_sz = input.size()
         T = F.log_softmax(self.T, 0)  # NOTE: in log-space
@@ -131,7 +206,7 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
         for i in range(seq_len):
             logits = F.log_softmax(self.logits(hidden_states[i]), 1)  # log q(z_i)
             probs = logits.exp()  # q(z_i)
-            emission = F.embedding(input[i]), emit)  # log p(x_i | z_i)
+            emission = F.embedding(input[i], emit)  # log p(x_i | z_i)
 
             # unary potentials
             elbo += (emission * probs).sum(1)  # E_q[log p(x_i | z_i)]
@@ -201,11 +276,10 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
 
             return [alpha[i] + beta[i] - log_marginal.unsqueeze(1) for i in range(seq_len)], 0, log_marginal
 
-    # 
-    # SAMPLED ELBO 
     #
-
-    def sampled_elbo(input, args, n_particles, emb, hidden_states):
+    # SAMPLED ELBO
+    #
+    def sampled_elbo(self, input, args, n_particles, emb, hidden_states):
         seq_len, batch_sz = input.size()
         T = nn.Softmax(dim=0)(self.T)  # NOTE: not in log-space
         pi = nn.Softmax(dim=0)(self.pi)
@@ -225,7 +299,7 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
 
             # build the next z sample
             # p = RelaxedOneHotCategorical(probs=prior_probs, temperature=Variable(torch.Tensor([args.temp_prior]).cuda()))
-            q = RelaxedOneHotCategorical(temperature=Variable(torch.Tensor([args.temp_prior]).cuda()), logits=logits)
+            q = RelaxedOneHotCategorical(temperature=Variable(torch.Tensor([args.temp]).cuda()), logits=logits)
             z = q.sample()
 
             log_probs = F.log_softmax(logits, dim=1)
@@ -244,13 +318,12 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
                 prior_probs = (T.unsqueeze(0) * z.unsqueeze(1)).sum(2)
 
         (loss.sum()/(seq_len * batch_sz * n_particles)).backward(retain_graph=True)
-        return loss
+        return loss, seq_len * batch_sz
 
     #
     # SAMPLED IWAE
     #
-
-    def sampled_iwae(input, args, n_particles, loss):
-        loss = log_sum_exp(-loss.view(n_particles, batch_sz), 0) + math.log(n_particles)
-        loss.sum().backward(retain_graph=True)
-
+    def sampled_iwae(self, input, args, n_particles, loss, tokens):
+        seq_len, batch_sz = input.size()
+        loss = -log_sum_exp(-loss.view(n_particles, batch_sz), 0) + math.log(n_particles)
+        (loss.sum()/tokens).backward(retain_graph=True)

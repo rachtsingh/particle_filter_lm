@@ -91,6 +91,7 @@ parser.add_argument('--embedding', type=str, default=None,
 parser.add_argument('--load-z-gru', type=str, default=None,
                     help='Which file to use to initialize the p(z) GRU')
 parser.add_argument('--base-filename', type=str, default=None)
+parser.add_argument('--no-scheduler', action='store_true')
 args = parser.parse_args()
 
 # Set the random seed manually for reproducibility.
@@ -181,7 +182,8 @@ elif args.model == 'hmm_lstm_joint':
     model = vi_filter.HMM_Joint_LSTM(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, lstm_hidden_size=args.lstm_sz,
                                      word_dim=args.word_dim, separate_opt=False)
 elif args.model == 'ablation':
-    model = ablation.HMM_Gradients(args.z_dim, args.x_dim, args.hidden, args.nhid, args.word_dim, args.temp, args.temp_prior)
+    model = ablation.HMM_Gradients(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
+                                   word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
 else:
     raise NotImplementedError("TODO")
 
@@ -213,6 +215,7 @@ if not args.quiet:
     print("sha: {}".format(get_sha().strip()))
     print('args:', args)
     print('model total parameters:', total_params)
+    print('model parameter breakdown:', model.get_parameter_statistics())
     print('model architecture:')
     print(model)
 
@@ -226,8 +229,8 @@ stored_loss = 100000000
 
 
 def flush():
+    mode = 'w' if VERSION[0] == 2 else 'wb'
     if args.save is not None:
-        mode = 'w' if VERSION[0] == 2 else 'wb'
         with open(args.save, mode) as f:
             torch.save(model.state_dict(), f)
             print('saved parameters to {}'.format(args.save))
@@ -242,17 +245,24 @@ def flush():
             else:
                 hidden = None
             torch.save((T, pi, emit, hidden), f)
+    if args.base_filename is not None:
+        with open(args.base_filename, mode) as f:
+            torch.save(model.storage, f)
 
 
 # At any point you can hit Ctrl + C to break out of training early.
 try:
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
-    scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=1, verbose=True, threshold=0.01, min_lr=1e-5)
 
-    val_loss, val_nll, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
-    print("-" * 89)
-    print("ELBO: {:5.2f}, val_nll: {:5.2f}, ELBO ppl: {:5.2f}".format(val_loss, val_nll, np.exp(val_loss)))
-    print("-" * 89)
+    if not args.no_scheduler:
+        scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=1, verbose=True, threshold=0.01, min_lr=1e-5)
+    else:
+        print("ignoring scheduler, lr is fixed")
+
+    # val_loss, val_nll, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
+    # print("-" * 89)
+    # print("ELBO: {:5.2f}, val_nll: {:5.2f}, ELBO ppl: {:5.2f}".format(val_loss, val_nll, np.exp(val_loss)))
+    # print("-" * 89)
 
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()
@@ -264,20 +274,25 @@ try:
 
         # let's ignore ASGD for now
         val_loss, val_nll, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
+
+        if not args.no_scheduler:
+            scheduler.step(val_loss)
+
         print("anneal: {:.3f}".format(args.anneal))
-        scheduler.step(val_loss)
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             flush()
         if not args.quiet:
             if val_loss < 10:
                 ppl = np.exp(val_loss)
+                true_marginal_ppl = np.exp(-true_marginal)
             else:
                 ppl = np.inf
+                true_marginal_ppol = np.inf
 
             print('-' * 80)
-            print('| end of epoch {:3d} | time: {:5.2f}s | valid ELBO {:5.2f} | valid NLL {:5.2f} | PPL: {:5.2f}'
-                  ''.format(epoch, (time.time() - epoch_start_time), val_loss, val_nll, ppl))
+            print('| end of epoch {:3d} | time: {:5.2f}s | valid ELBO {:5.2f} | valid NLL {:5.2f} | PPL: {:5.2f} | true PPL: {:5.2f}'
+                  ''.format(epoch, (time.time() - epoch_start_time), val_loss, val_nll, ppl, true_marginal_ppl))
             print('-' * 80)
 
         if epoch % 10 == 0:

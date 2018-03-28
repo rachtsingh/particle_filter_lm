@@ -464,7 +464,7 @@ class HMM_Joint_LSTM(HMM_EM_Layers):
 
             # feed information from the current state into the next prediction (i.e. teacher-forcing)
             h = self.lstm(emb[i], h)
-            
+
             if not NO_HMM:
                 current_state = F.log_softmax(alpha[i], 1)
                 if self.separate_opt:
