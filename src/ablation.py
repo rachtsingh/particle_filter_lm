@@ -84,8 +84,8 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
                 self.collect_gradients('sampled_elbo', optimizer, clean=True)
                 self.sampled_iwae(input, args, n_particles, loss, tokens)
                 self.collect_gradients('sampled_iwae', optimizer, clean=True)
-
-                # particle filter goes here
+                self.sampled_filter(input, args, n_particles, emb, hidden_states)
+                self.collect_gradients('sampled_filter', optimizer, clean=True)
 
         # now do the MFVI gradient
         loss, _, tokens, _ = self.exact_elbo(input, args, test, emb, hidden_states)
