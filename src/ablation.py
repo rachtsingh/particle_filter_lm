@@ -68,6 +68,8 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
         hidden_states, (_, _) = self.encoder(emb, hidden)
 
         if test:
+            # if args.train_method == 'sampled_filter':
+                # return self.sampled_filter(input, args, n_particles, emb, hidden_states)
             return self.exact_elbo(input, args, test, emb, hidden_states)
 
         if args.train_method:
@@ -436,7 +438,9 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
                 # now in probability space
                 prior_probs = (T.unsqueeze(0) * z.unsqueeze(1)).sum(2)
 
-        (-loss.sum()/(seq_len * batch_sz * n_particles)).backward()
+        if self.training:
+            (-loss.sum()/(seq_len * batch_sz * n_particles)).backward()
+        return -loss.sum(), nlls.sum(), seq_len * batch_sz * n_particles, 0
 
     # override because otherwise it's slow
     def exact_evaluate(self, data_source, args, num_importance_samples=3):
