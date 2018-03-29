@@ -72,8 +72,8 @@ class HMM_GRU_MFVI(HMM_VI_Layers):
     This model isn't a VRNN - it's just a regular GRU language model with the additional information / inference from z
     being concatenated into the process
     """
-    def __init__(self, z_dim, x_dim, hidden_size, nhid, word_dim, temp, temp_prior, params=None, *args, **kwargs):
-        super(HMM_GRU_MFVI, self).__init__(z_dim, x_dim, hidden_size, nhid, word_dim, temp, temp_prior, params, *args, **kwargs)
+    def __init__(self, *args, **kwargs):
+        super(HMM_GRU_MFVI, self).__init__(*args, **kwargs)
 
         # set up the new generative model - we have to use the T, pi, and emit somehow
         # well it's emit and hidden
@@ -81,8 +81,8 @@ class HMM_GRU_MFVI(HMM_VI_Layers):
         # z is batch x hidden, self.hidden is hidden_size x z_dim
         # so x ~ Multi(self.emit @ torch.cat([z, h]))
         # and h = self.hidden_rnn(self.emit[true_x], h)
-        self.hidden_rnn = nn.GRUCell(self.word_dim, hidden_size)
-        self.project = nn.Linear(hidden_size + z_dim, hidden_size)
+        self.hidden_rnn = nn.GRUCell(self.word_dim, self.hidden_size)
+        self.project = nn.Linear(self.hidden_size + self.z_dim, self.hidden_size)
 
     def init_inference(self, hmm_params):
         load_inference(self, hmm_params)
@@ -336,15 +336,20 @@ class VRNN_LSTM_Auto_Concrete(HMM_LSTM_Auto_Deep):
     The big difference with the parent is that this model attempts to learn
     the inference network directly via the Concrete distribution.
     """
+    def organize(self):
+        self.enc.append(self.logits)
+        self.dec = nn.ModuleList([self.z_decoder, self.hidden_rnn, self.project,
+                                  self.z_emb, self.project_z])
+
     def forward(self, input, args, n_particles, test=False):
+        """
+        evaluation is the IWAE-10 bound
+        """
         if test:
             n_particles = 10
         else:
             n_particles = 1
         pi = F.log_softmax(self.pi, 0)
-
-        temp = Variable(self.pi.data.new([args.temp]))
-        temp_prior = Variable(self.pi.data.new([args.temp_prior]))
 
         # run the input and teacher-forcing inputs through the embedding layers here
         seq_len, batch_sz = input.size()
@@ -376,22 +381,22 @@ class VRNN_LSTM_Auto_Concrete(HMM_LSTM_Auto_Deep):
 
             if test:
                 q = OneHotCategorical(logits=logits)
-                p = OneHotCategorical(logits=prior_logits)
+                # p = OneHotCategorical(logits=prior_logits)
                 z = q.sample()
             else:
-                q = RelaxedOneHotCategorical(temperature=temp, logits=logits)
-                p = RelaxedOneHotCategorical(temperature=temp_prior, logits=prior_logits)
+                q = RelaxedOneHotCategorical(temperature=self.temp, logits=logits)
+                # p = RelaxedOneHotCategorical(temperature=self.temp_prior, logits=prior_logits)
                 z = q.rsample()
 
             # this should be batch_sz x x_dim
             scores = torch.mm(self.project(torch.cat([h[0], z], 1)), self.emit.t())
 
             NLL = nn.CrossEntropyLoss(reduce=False)(scores, input[i].repeat(n_particles))
-            KL = q.log_prob(z) - p.log_prob(z)
-            if test:
-                loss += (NLL + KL)
-            else:
-                loss += (NLL + args.anneal * KL)
+            # KL = q.log_prob(z) - p.log_prob(z)
+            KL = (logits.exp() * (logits - prior_logits)).sum(1)
+            loss += (NLL + KL)
+            # else:
+            #     loss += (NLL + args.anneal * KL)
 
             nlls[i] = NLL.data
 
@@ -426,7 +431,7 @@ class HMM_Joint_LSTM(HMM_EM_Layers):
         self.lstm_hidden_size = lstm_hidden_size
 
     def forward(self, input, args, test=False):
-        NO_HMM = True
+        NO_HMM = False
 
         seq_len, batch_size = input.size()
         # compute the loss as the sum of the forward-backward loss
