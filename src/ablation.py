@@ -66,8 +66,8 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
 
         if test:
             # this is super ugly
-            if args.train_method == 'sampled_filter':
-                return self.sampled_filter(input, args, n_particles, emb, hidden_states)
+            # if args.train_method == 'sampled_filter':
+                # return self.sampled_filter(input, args, n_particles, emb, hidden_states)
             return self.exact_elbo(input, args, test, emb, hidden_states)
 
         if args.train_method:
