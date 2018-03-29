@@ -216,7 +216,7 @@ if not args.quiet:
     print("sha: {}".format(get_sha().strip()))
     print('args:', args)
     print('model total parameters:', total_params)
-    print('model parameter breakdown:', model.get_parameter_statistics())
+    # print('model parameter breakdown:', model.get_parameter_statistics())
     print('model architecture:')
     print(model)
 
@@ -260,10 +260,10 @@ try:
     else:
         print("ignoring scheduler, lr is fixed")
 
-    # val_loss, val_nll, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
-    # print("-" * 89)
-    # print("ELBO: {:5.2f}, val_nll: {:5.2f}, ELBO ppl: {:5.2f}".format(val_loss, val_nll, np.exp(val_loss)))
-    # print("-" * 89)
+    val_loss, val_nll, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
+    print("-" * 89)
+    print("ELBO: {:5.2f}, val_nll: {:5.2f}, ELBO ppl: {:5.2f}, true ppl: {:5.2f}".format(val_loss, val_nll, np.exp(val_loss), np.exp(-true_marginal)))
+    print("-" * 89)
 
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()

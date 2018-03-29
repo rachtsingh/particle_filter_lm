@@ -47,6 +47,8 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
     def train_epoch(self, train_data, optimizer, epoch, args, num_importance_samples):
         self.train()
         for i, batch in enumerate(train_data):
+            if (i + 1) % 100 == 0:
+                print(i + 1)
             if args.cuda:
                 batch = batch.cuda()
             data = Variable(batch.squeeze(0).t().contiguous())  # squeeze for 1 billion
@@ -381,6 +383,7 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
         for i in range(seq_len):
             # the approximate posterior comes from the same thing as before
             logits = F.log_softmax(self.logits(hidden_states[i]), 1)
+            log_probs = F.log_softmax(logits, dim=1)
 
             p = RelaxedOneHotCategorical(temperature=self.temp_prior, probs=prior_probs)
             q = RelaxedOneHotCategorical(temperature=self.temp, logits=logits)
@@ -405,7 +408,6 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
 
             # sample ancestors, and reindex everything
             if args.filter:
-                pdb.set_trace()
                 probs = accumulated_weights.data.exp()
                 probs += 0.01
                 probs = probs / probs.sum(0, keepdim=True)

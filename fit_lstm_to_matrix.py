@@ -19,7 +19,7 @@ def main():
     project = nn.Linear(Z_HID, z_dim).cuda()
     optimizer = torch.optim.Adam(lstm.parameters(), lr=0.001)
 
-    for i in range(1, 1000):
+    for i in range(1, 3000):
         # construct a batch of z_dim datapoints (one for each possible value of z)
         # and the hidden states of the GRU at that point - which we need to ignore (i.e. robust to noise)
         states = (Variable(torch.randn(REPEAT * z_dim, Z_HID).cuda()), Variable(torch.randn(REPEAT * z_dim, Z_HID).cuda()))
@@ -38,7 +38,7 @@ def main():
         if i % 100 == 0:
             print("({:.3f}, {:.3f})".format(error.data[0], regularization.data[0]))
 
-    with open('lstm.pt', 'w') as f:
+    with open('lstm_final.pt', 'w') as f:
         torch.save((lstm, z_emb, project), f)
 
 
