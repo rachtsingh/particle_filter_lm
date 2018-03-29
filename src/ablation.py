@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from torch.autograd import Variable
-from torch.distributions import RelaxedOneHotCategorical
+from torch.distributions import RelaxedOneHotCategorical, OneHotCategorical
 import numpy as np
 import math
 import pdb  # noqa: F401
@@ -40,15 +40,12 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
     """
     def __init__(self, *args, **kwargs):
         super(HMM_Gradients, self).__init__(*args, **kwargs)
-        print(self.temp, self.temp_prior)
         self.gradients = {}
         self.storage = {}
 
     def train_epoch(self, train_data, optimizer, epoch, args, num_importance_samples):
         self.train()
         for i, batch in enumerate(train_data):
-            if (i + 1) % 100 == 0:
-                print(i + 1)
             if args.cuda:
                 batch = batch.cuda()
             data = Variable(batch.squeeze(0).t().contiguous())  # squeeze for 1 billion
@@ -68,6 +65,9 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
         hidden_states, (_, _) = self.encoder(emb, hidden)
 
         if test:
+            # this is super ugly
+            if args.train_method == 'sampled_filter':
+                return self.sampled_filter(input, args, n_particles, emb, hidden_states)
             return self.exact_elbo(input, args, test, emb, hidden_states)
 
         if args.train_method:
@@ -80,7 +80,7 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
 
             # in a loop, collect both the sampled ELBO and the sampled PF gradients
             for k in range(20):
-                loss, tokens = self.sampled_elbo(input, args, n_particles, emb, hidden_states)
+                loss, _, tokens, _ = self.sampled_elbo(input, args, n_particles, emb, hidden_states)
                 self.collect_gradients('sampled_elbo', optimizer, clean=True)
                 self.sampled_iwae(input, args, n_particles, loss, tokens)
                 self.collect_gradients('sampled_iwae', optimizer, clean=True)
@@ -105,7 +105,7 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
         elif args.train_method == 'sampled_elbo':
             self.sampled_elbo(input, args, n_particles, emb, hidden_states)
         elif args.train_method == 'sampled_iwae':
-            loss, tokens = self.sampled_elbo(input, args, n_particles, emb, hidden_states)
+            loss, _, tokens, _ = self.sampled_elbo(input, args, n_particles, emb, hidden_states)
             optimizer.zero_grad()
             self.sampled_iwae(input, args, n_particles, loss, tokens)
         elif args.train_method == 'sampled_filter':
@@ -343,7 +343,7 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
                 prior_probs = (T.unsqueeze(0) * z.unsqueeze(1)).sum(2)
 
         (loss.sum()/(seq_len * batch_sz * n_particles)).backward(retain_graph=True)
-        return loss, seq_len * batch_sz
+        return loss, 0, seq_len * batch_sz * n_particles, 0
 
     #
     # SAMPLED IWAE
@@ -363,12 +363,11 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
     # SAMPLED PARTICLE FILTER METHOD
     #
     def sampled_filter(self, input, args, n_particles, emb, hidden_states):
+        seq_len, batch_sz = input.size()
         T = F.log_softmax(self.T, 0)  # NOTE: in log-space
         pi = F.log_softmax(self.pi, 0)  # NOTE: in log-space
         emit = self.calc_emit()
 
-        # run the input and teacher-forcing inputs through the embedding layers here
-        seq_len, batch_sz = input.size()
         hidden_states = hidden_states.repeat(1, n_particles, 1)
 
         nlls = hidden_states.data.new(seq_len, batch_sz * n_particles)
@@ -378,20 +377,26 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
         resamples = 0
 
         # in log probability space
-        prior_probs = pi.unsqueeze(0).expand(batch_sz * n_particles, self.z_dim)
+        prior_logits = pi.unsqueeze(0).expand(batch_sz * n_particles, self.z_dim)
 
         for i in range(seq_len):
             # the approximate posterior comes from the same thing as before
-            logits = F.log_softmax(self.logits(hidden_states[i]), 1)
-            log_probs = F.log_softmax(logits, dim=1)
+            logits = self.logits(hidden_states[i])
 
-            p = RelaxedOneHotCategorical(temperature=self.temp_prior, probs=prior_probs)
-            q = RelaxedOneHotCategorical(temperature=self.temp, logits=logits)
-            z = q.rsample()
+            if not self.training:
+                # this is crucial!!
+                p = OneHotCategorical(logits=prior_logits)
+                q = OneHotCategorical(logits=logits)
+                z = q.sample()
+            else:
+                p = RelaxedOneHotCategorical(temperature=self.temp_prior, logits=prior_logits)
+                q = RelaxedOneHotCategorical(temperature=self.temp, logits=logits)
+                z = q.rsample()
 
             # now, compute the log-likelihood of the data given this z-sample
             emission = F.embedding(input[i].repeat(n_particles), emit)
-            NLL = -log_sum_exp(emission + log_probs, 1)
+            NLL = -(emission * z).sum(1)
+            # NLL = -self.decode(z, input[i].repeat(n_particles), (emit,))  # diff. w.r.t. z
             nlls[i] = NLL.data
 
             # compute the weight using `reweight` on page (4)
@@ -404,7 +409,7 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
             Z = log_sum_exp(wa, dim=0)  # line 7
 
             loss += Z  # line 8
-            accumulated_weights = F.log_softmax(wa, dim=0)  # line 9
+            accumulated_weights = wa - Z  # F.log_softmax(wa, dim=0)  # line 9
 
             # sample ancestors, and reindex everything
             if args.filter:
@@ -433,10 +438,12 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
                     accumulated_weights = -math.log(n_particles)  # will contain log w_{t - 1}
 
             if i != seq_len - 1:
-                # now in probability space
-                prior_probs = (T.unsqueeze(0) * z.unsqueeze(1)).sum(2)
+                # now in log-probability space
+                prior_logits = log_sum_exp(T.unsqueeze(0) + z.unsqueeze(1), 2)
 
-        (-loss.sum()/(seq_len * batch_sz * n_particles)).backward(retain_graph=True)
+        if self.training:
+            (-loss.sum()/(seq_len * batch_sz * n_particles)).backward(retain_graph=True)
+        return -loss.sum(), nlls.sum(), seq_len * batch_sz * n_particles, 0
 
     # override because otherwise it's slow
     def exact_evaluate(self, data_source, args, num_importance_samples=3):

@@ -93,6 +93,7 @@ parser.add_argument('--load-z-gru', type=str, default=None,
 parser.add_argument('--base-filename', type=str, default=None)
 parser.add_argument('--no-scheduler', action='store_true')
 parser.add_argument('--train-method', type=str, default=None)
+parser.add_argument('--finetune-inference', action='store_true')
 args = parser.parse_args()
 
 # Set the random seed manually for reproducibility.
@@ -253,7 +254,13 @@ def flush():
 
 # At any point you can hit Ctrl + C to break out of training early.
 try:
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
+    if args.finetune_inference:
+        # we have to be a lot more careful - this only works with the vrnn_lstm_concrete
+        model.organize()
+        optimizer = torch.optim.Adam([{'params': model.enc.parameters(), 'lr': args.lr / 5.},
+                                      {'params': model.dec.parameters()}], lr=args.lr)
+    else:
+        optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
 
     if not args.no_scheduler:
         scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=1, verbose=True, threshold=0.01, min_lr=1e-5)
@@ -261,6 +268,7 @@ try:
         print("ignoring scheduler, lr is fixed")
 
     val_loss, val_nll, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
+    print(val_loss, val_nll, true_marginal)
     print("-" * 89)
     print("ELBO: {:5.2f}, val_nll: {:5.2f}, ELBO ppl: {:5.2f}, true ppl: {:5.2f}".format(val_loss, val_nll, np.exp(val_loss), np.exp(-true_marginal)))
     print("-" * 89)
