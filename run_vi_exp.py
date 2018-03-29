@@ -268,6 +268,7 @@ try:
         print("ignoring scheduler, lr is fixed")
 
     val_loss, val_nll, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
+    print(val_loss, val_nll, true_marginal)
     print("-" * 89)
     print("ELBO: {:5.2f}, val_nll: {:5.2f}, ELBO ppl: {:5.2f}, true ppl: {:5.2f}".format(val_loss, val_nll, np.exp(val_loss), np.exp(-true_marginal)))
     print("-" * 89)

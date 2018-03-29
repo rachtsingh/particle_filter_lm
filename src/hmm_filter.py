@@ -249,7 +249,7 @@ class HMMInference(HMM_EM):
             data = Variable(batch)  # squeeze for 1 billion
             elbo, nll, _, resamples = self.forward(data, args, num_importance_samples, test=True)
             total_log_marginal += self.eval_log_marginal(batch).sum()
-            total_loss += elbo.detach().data
+            total_loss += elbo.sum().detach().data
             total_nll += nll
             total_tokens += (data.size()[0] * data.size()[1])
             total_resamples += resamples
@@ -455,7 +455,7 @@ class HMM_VI_Marginalized(HMM_VI_Layers):
             data = Variable(batch)  # squeeze for 1 billion
             elbo, _, _, resamples = super(HMM_VI_Marginalized, self).forward(data, args, num_importance_samples, test=True)
             total_log_marginal += self.eval_log_marginal(batch).sum()
-            total_loss += elbo.detach().data
+            total_loss += elbo.sum().detach().data
             total_tokens += (data.size()[0] * data.size()[1])
             total_resamples += resamples
             batch_idx += 1
