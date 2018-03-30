@@ -171,9 +171,9 @@ elif args.model == 'hmm_gru_mfvi_deep':
 elif args.model == 'hmm_gru_auto_deep':
     model = vi_filter.HMM_GRU_Auto_Deep(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
                                         word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
-elif args.model == 'hmm_lstm_auto_deep':
-    model = vi_filter.HMM_LSTM_Auto_Deep(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
-                                         word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
+elif args.model == 'vrnn_lstm_auto_deep':
+    model = vi_filter.VRNN_LSTM_Auto_Deep(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
+                                          word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
 elif args.model == 'vrnn_lstm_concrete':
     model = vi_filter.VRNN_LSTM_Auto_Concrete(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
                                               word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
@@ -263,7 +263,8 @@ try:
         optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
 
     if not args.no_scheduler:
-        scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=1, verbose=True, threshold=0.01, min_lr=1e-5)
+        # scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=1, verbose=True, threshold=0.01, min_lr=1e-5)
+        scheduler = StepLR(optimizer, step_size=5, gamma=0.7)
     else:
         print("ignoring scheduler, lr is fixed")
 
@@ -285,7 +286,7 @@ try:
         val_loss, val_nll, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
 
         if not args.no_scheduler:
-            scheduler.step(val_loss)
+            scheduler.step()
 
         print("anneal: {:.3f}".format(args.anneal))
         if val_loss < best_val_loss:
@@ -307,10 +308,10 @@ try:
                   ''.format(epoch, (time.time() - epoch_start_time), val_loss, val_nll, ppl, true_marginal_ppl))
             print('-' * 80)
 
-        if epoch % 10 == 0:
-            args.lr = args.lr * 0.8
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = args.lr
+        # if epoch % 10 == 0:
+        #     args.lr = args.lr * 0.8
+        #     for param_group in optimizer.param_groups:
+        #         param_group['lr'] = args.lr
 except KeyboardInterrupt:
     if not args.quiet:
         print('-' * 89)
