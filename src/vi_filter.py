@@ -615,11 +615,16 @@ class HMM_Joint_LSTM(HMM_EM_Layers):
     This is a reimplementation of the joint-hybrid work of (Krakovna, 2016),
     and the separate opt, though we do everything via gradient descent rather than a custom FFBS
     """
-    def __init__(self, z_dim, x_dim, hidden_size, word_dim, lstm_hidden_size, separate_opt=False):
+    def __init__(self, z_dim, x_dim, hidden_size, word_dim, lstm_hidden_size, separate_opt=False, deep=False):
         super(HMM_Joint_LSTM, self).__init__(z_dim, x_dim, hidden_size)
         self.inp_embedding = nn.Embedding(x_dim, word_dim)
         self.lstm = nn.LSTMCell(word_dim, lstm_hidden_size)
-        self.project = nn.Linear(lstm_hidden_size + z_dim, x_dim)
+        if deep:
+            self.project = nn.Sequential(nn.Linear(lstm_hidden_size + z_dim, 100),
+                                         nn.ReLU(),
+                                         nn.Linear(100, x_dim))
+        else:
+            self.project = nn.Linear(lstm_hidden_size + z_dim, x_dim)
         self.separate_opt = separate_opt
         self.lstm_hidden_size = lstm_hidden_size
 
@@ -672,6 +677,78 @@ class HMM_Joint_LSTM(HMM_EM_Layers):
         else:
             loss = -log_marginal.sum() + NLL.sum()
         return loss, NLL.data.sum()
+
+    def evaluate(self, data_source, args, num_samples=None):
+        self.eval()
+        total_loss = 0
+        total_nll = 0
+        total_tokens = 0
+
+        for batch in data_source:
+            if args.cuda:
+                batch = batch.cuda()
+            data = Variable(batch.squeeze(0).t().contiguous())  # squeeze for 1 billion
+            total_tokens += (data.size()[0] * data.size()[1])
+            loss, nll = self.forward(data, args, test=True)
+            loss = loss.sum()
+            total_loss += loss.detach().data
+            total_nll += nll
+
+        if args.dataset != '1billion':
+            total_tokens = 1
+
+        return total_nll / float(total_tokens), total_loss[0] / float(total_tokens), (total_loss[0] - total_nll)/float(total_tokens)
+
+    def train_epoch(self, train_data, optimizer, epoch, args, num_samples=None):
+        self.train()
+        total_loss = 0
+
+        for i, batch in enumerate(train_data):
+            if args.cuda:
+                batch = batch.cuda()
+            data = Variable(batch.squeeze(0).t().contiguous())  # squeeze for 1 billion
+            optimizer.zero_grad()
+            loss, nll = self.forward(data, args, test=False)
+            tokens = (data.size()[0] * data.size()[1])
+            loss = loss.sum() / tokens
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.detach()
+            if (i + 1) % args.log_interval == 0:
+                print("total loss: {:.3f}, nll: {:.3f}".format(loss.data[0], nll / tokens))
+
+        # actually ignored
+        return total_loss.data[0]
+
+class LSTMLM(nn.Module):
+    def __init__(self, x_dim, lstm_hidden_size, word_dim):
+        super(LSTMLM, self).__init__()
+        self.inp_embedding = nn.Embedding(x_dim, word_dim)
+        self.model = nn.LSTM(word_dim, lstm_hidden_size)
+        self.score = nn.Linear(lstm_hidden_size, x_dim)
+        self.lstm_hidden_size = lstm_hidden_size
+        self.lockdrop = LockedDropout()
+        self.dropout_x = 0.3
+
+    def forward(self, input, args, test=False):
+        seq_len, batch_sz = input.size()
+        emb = self.inp_embedding(input)
+        x_emb = self.lockdrop(emb, self.dropout_x)
+
+        h = (Variable(emb.data.new(1, batch_sz, self.lstm_hidden_size).zero_()),
+             Variable(emb.data.new(1, batch_sz, self.lstm_hidden_size).zero_()))
+        
+        # run the LSTM
+        out, _ = self.model(x_emb[:-1], h)
+    
+        NLL = 0
+
+        # make predictions 
+        for i in range(seq_len - 1):
+            scores = self.score(out[i])
+            NLL += nn.CrossEntropyLoss(size_average=False)(scores, input[i + 1])
+
+        return NLL.sum(), NLL.data.sum()
 
     def evaluate(self, data_source, args, num_samples=None):
         self.eval()

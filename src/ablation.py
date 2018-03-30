@@ -46,6 +46,8 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
     def train_epoch(self, train_data, optimizer, epoch, args, num_importance_samples):
         self.train()
         for i, batch in enumerate(train_data):
+            if (i + 1) % 250 == 0:
+                print(i + 1)
             if args.cuda:
                 batch = batch.cuda()
             data = Variable(batch.squeeze(0).t().contiguous())  # squeeze for 1 billion
