@@ -257,7 +257,8 @@ if args.load_model:
 try:
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
     if not args.no_scheduler:
-        scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=1, verbose=True, threshold=0.01, min_lr=1e-5)
+        # scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=1, verbose=True, threshold=0.01, min_lr=1e-5)
+        scheduler = StepLR(optimizer, gamma=0.7, step_size=10)
     else:
         print("ignoring scheduler, lr is fixed")
 

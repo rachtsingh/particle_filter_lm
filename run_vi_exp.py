@@ -94,6 +94,7 @@ parser.add_argument('--load-z-gru', type=str, default=None,
 parser.add_argument('--base-filename', type=str, default=None)
 parser.add_argument('--no-scheduler', action='store_true')
 parser.add_argument('--train-method', type=str, default=None)
+parser.add_argument('--finetune-inference', action='store_true')
 args = parser.parse_args()
 
 # Set the random seed manually for reproducibility.
@@ -171,9 +172,9 @@ elif args.model == 'hmm_gru_mfvi_deep':
 elif args.model == 'hmm_gru_auto_deep':
     model = vi_filter.HMM_GRU_Auto_Deep(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
                                         word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
-elif args.model == 'hmm_lstm_auto_deep':
-    model = vi_filter.HMM_LSTM_Auto_Deep(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
-                                         word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
+elif args.model == 'vrnn_lstm_auto_deep':
+    model = vi_filter.VRNN_LSTM_Auto_Deep(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
+                                          word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
 elif args.model == 'vrnn_lstm_concrete':
     model = vi_filter.VRNN_LSTM_Auto_Concrete(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
                                               word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
@@ -256,7 +257,13 @@ def flush():
 
 # At any point you can hit Ctrl + C to break out of training early.
 try:
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
+    if args.finetune_inference:
+        # we have to be a lot more careful - this only works with the vrnn_lstm_concrete
+        model.organize()
+        optimizer = torch.optim.Adam([{'params': model.enc.parameters(), 'lr': args.lr / 5.},
+                                      {'params': model.dec.parameters()}], lr=args.lr)
+    else:
+        optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
 
     if not args.no_scheduler:
         if args.model == 'hmm_lstm_sep' or args.model == 'hmm_lstm_joint':
@@ -268,6 +275,7 @@ try:
         print("ignoring scheduler, lr is fixed")
 
     val_loss, val_nll, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
+    print(val_loss, val_nll, true_marginal)
     print("-" * 89)
     print("ELBO: {:5.2f}, val_nll: {:5.2f}, ELBO ppl: {:5.2f}, true ppl: {:5.2f}".format(val_loss, val_nll, np.exp(val_loss), np.exp(-true_marginal)))
     print("-" * 89)
@@ -283,6 +291,8 @@ try:
         # let's ignore ASGD for now
         val_loss, val_nll, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
 
+        if not args.no_scheduler:
+            scheduler.step()
 
         print("anneal: {:.3f}".format(args.anneal))
         if val_loss < best_val_loss:
@@ -312,10 +322,10 @@ try:
             print('-' * 80)
             sys.stdout.flush()
 
-        if epoch % 10 == 0:
-            args.lr = args.lr * 0.8
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = args.lr
+        # if epoch % 10 == 0:
+        #     args.lr = args.lr * 0.8
+        #     for param_group in optimizer.param_groups:
+        #         param_group['lr'] = args.lr
 except KeyboardInterrupt:
     if not args.quiet:
         print('-' * 89)

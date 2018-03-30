@@ -72,8 +72,8 @@ class HMM_GRU_MFVI(HMM_VI_Layers):
     This model isn't a VRNN - it's just a regular GRU language model with the additional information / inference from z
     being concatenated into the process
     """
-    def __init__(self, z_dim, x_dim, hidden_size, nhid, word_dim, temp, temp_prior, params=None, *args, **kwargs):
-        super(HMM_GRU_MFVI, self).__init__(z_dim, x_dim, hidden_size, nhid, word_dim, temp, temp_prior, params, *args, **kwargs)
+    def __init__(self, *args, **kwargs):
+        super(HMM_GRU_MFVI, self).__init__(*args, **kwargs)
 
         # set up the new generative model - we have to use the T, pi, and emit somehow
         # well it's emit and hidden
@@ -81,8 +81,8 @@ class HMM_GRU_MFVI(HMM_VI_Layers):
         # z is batch x hidden, self.hidden is hidden_size x z_dim
         # so x ~ Multi(self.emit @ torch.cat([z, h]))
         # and h = self.hidden_rnn(self.emit[true_x], h)
-        self.hidden_rnn = nn.GRUCell(self.word_dim, hidden_size)
-        self.project = nn.Linear(hidden_size + z_dim, hidden_size)
+        self.hidden_rnn = nn.GRUCell(self.word_dim, self.hidden_size)
+        self.project = nn.Linear(self.hidden_size + self.z_dim, self.hidden_size)
 
     def init_inference(self, hmm_params):
         load_inference(self, hmm_params)
@@ -242,12 +242,12 @@ class HMM_GRU_Auto_Deep(HMM_GRU_MFVI_Deep):
         return loss.sum(), NLL.sum(), (seq_len * batch_sz), 0
 
 
-class HMM_LSTM_Auto_Deep(HMM_GRU_MFVI_Deep):
+class VRNN_LSTM_Auto_Deep(HMM_GRU_MFVI_Deep):
     """
     TODO: make 50 an arg (it's Z_EMB and Z_HID)
     """
     def __init__(self, *args, **kwargs):
-        super(HMM_LSTM_Auto_Deep, self).__init__(*args, **kwargs)
+        super(VRNN_LSTM_Auto_Deep, self).__init__(*args, **kwargs)
         Z_EMB = 50
         Z_HID = 50
         self.hidden_rnn = nn.LSTMCell(self.word_dim, self.hidden_size)
@@ -331,20 +331,25 @@ class HMM_LSTM_Auto_Deep(HMM_GRU_MFVI_Deep):
         return loss.sum(), NLL.sum(), (seq_len * batch_sz), 0
 
 
-class VRNN_LSTM_Auto_Concrete(HMM_LSTM_Auto_Deep):
+class VRNN_LSTM_Auto_Concrete(VRNN_LSTM_Auto_Deep):
     """
     The big difference with the parent is that this model attempts to learn
     the inference network directly via the Concrete distribution.
     """
+    def organize(self):
+        self.enc.append(self.logits)
+        self.dec = nn.ModuleList([self.z_decoder, self.hidden_rnn, self.project,
+                                  self.z_emb, self.project_z])
+
     def forward(self, input, args, n_particles, test=False):
+        """
+        evaluation is the IWAE-10 bound
+        """
         if test:
             n_particles = 10
         else:
             n_particles = 1
         pi = F.log_softmax(self.pi, 0)
-
-        temp = Variable(self.pi.data.new([args.temp]))
-        temp_prior = Variable(self.pi.data.new([args.temp_prior]))
 
         # run the input and teacher-forcing inputs through the embedding layers here
         seq_len, batch_sz = input.size()
@@ -372,26 +377,26 @@ class VRNN_LSTM_Auto_Concrete(HMM_LSTM_Auto_Deep):
 
         for i in range(seq_len):
             # build the next z sample - not differentiable! we don't train the inference network
-            logits = F.log_softmax(self.logits(hidden_states[i]), 1).detach()
+            logits = F.log_softmax(self.logits(hidden_states[i]), 1)
 
             if test:
                 q = OneHotCategorical(logits=logits)
-                p = OneHotCategorical(logits=prior_logits)
+                # p = OneHotCategorical(logits=prior_logits)
                 z = q.sample()
             else:
-                q = RelaxedOneHotCategorical(temperature=temp, logits=logits)
-                p = RelaxedOneHotCategorical(temperature=temp_prior, logits=prior_logits)
+                q = RelaxedOneHotCategorical(temperature=self.temp, logits=logits)
+                # p = RelaxedOneHotCategorical(temperature=self.temp_prior, logits=prior_logits)
                 z = q.rsample()
 
             # this should be batch_sz x x_dim
             scores = torch.mm(self.project(torch.cat([h[0], z], 1)), self.emit.t())
 
             NLL = nn.CrossEntropyLoss(reduce=False)(scores, input[i].repeat(n_particles))
-            KL = q.log_prob(z) - p.log_prob(z)
-            if test:
-                loss += (NLL + KL)
-            else:
-                loss += (NLL + args.anneal * KL)
+            # KL = q.log_prob(z) - p.log_prob(z)
+            KL = (logits.exp() * (logits - prior_logits)).sum(1)
+            loss += (NLL + KL)
+            # else:
+            #     loss += (NLL + args.anneal * KL)
 
             nlls[i] = NLL.data
 
@@ -410,6 +415,193 @@ class VRNN_LSTM_Auto_Concrete(HMM_LSTM_Auto_Deep):
 
         # now, we calculate the final log-marginal estimator
         return loss.sum(), NLL.sum(), (seq_len * batch_sz), 0
+
+
+class VRNN_LSTM_Auto_PF(VRNN_LSTM_Auto_Concrete):
+    def forward(self, input, args, n_particles, test=False):
+        """
+        evaluation is the IWAE-10 bound
+        """
+        pi = F.log_softmax(self.pi, 0)
+
+        # run the input and teacher-forcing inputs through the embedding layers here
+        seq_len, batch_sz = input.size()
+        emb = self.inp_embedding(input)
+        hidden = self.init_hidden(batch_sz, self.nhid, 2)  # bidirectional
+        hidden_states, (_, _) = self.encoder(emb, hidden)
+        hidden_states = hidden_states.repeat(1, n_particles, 1)
+
+        # run the z-decoder at this point, evaluating the NLL at each step
+        h = (Variable(hidden_states.data.new(batch_sz * n_particles, self.hidden_size).zero_()),
+             Variable(hidden_states.data.new(batch_sz * n_particles, self.hidden_size).zero_()))
+
+        nlls = hidden_states.data.new(seq_len, batch_sz * n_particles)
+        loss = 0
+
+        # now a log-prob
+        prior_logits = pi.unsqueeze(0).expand(batch_sz * n_particles, self.z_dim)
+        prior_h = (Variable(torch.zeros(batch_sz * n_particles, 50).cuda()),
+                   Variable(torch.zeros(batch_sz * n_particles, 50).cuda()))
+
+        accumulated_weights = -math.log(n_particles)  # will contain log w_{t - 1}
+        logits = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)
+        feed = None
+
+        x_emb = self.lockdrop(emb, self.dropout_x)
+
+        for i in range(seq_len):
+            # build the next z sample - not differentiable! we don't train the inference network
+            logits = F.log_softmax(self.logits(hidden_states[i]), 1).detach()
+
+            if test:
+                q = OneHotCategorical(logits=logits)
+                p = OneHotCategorical(logits=prior_logits)
+                z = q.sample()
+            else:
+                q = RelaxedOneHotCategorical(temperature=self.temp, logits=logits)
+                p = RelaxedOneHotCategorical(temperature=self.temp_prior, logits=prior_logits)
+                z = q.rsample()
+
+            # this should be batch_sz x x_dim
+            scores = torch.mm(self.project(torch.cat([h[0], z], 1)), self.emit.t())
+
+            NLL = nn.CrossEntropyLoss(reduce=False)(scores, input[i].repeat(n_particles))
+            nlls[i] = NLL.data
+
+            f_term = p.log_prob(z)  # prior
+            r_term = q.log_prob(z)  # proposal
+            alpha = -NLL + (f_term - r_term)
+
+            wa = accumulated_weights + alpha.view(n_particles, batch_sz)
+
+            Z = log_sum_exp(wa, dim=0)  # line 7
+
+            loss += Z  # line 8
+            accumulated_weights = wa - Z  # F.log_softmax(wa, dim=0)  # line 9
+
+            probs = accumulated_weights.data.exp()
+            probs += 0.01
+            probs = probs / probs.sum(0, keepdim=True)
+            effective_sample_size = 1./probs.pow(2).sum(0)
+
+            if any_nans(probs):
+                pdb.set_trace()
+
+            # probs is [n_particles, batch_sz]
+            # ancestors [2 x 15] = [[0, 0, 0, ..., 0], [0, 1, 2, 3, ...]]
+            # offsets   [2 x 15] = [[0, 0, 0, ..., 0], [1, 1, 1, 1, ...]]
+
+            # resample / RSAMP
+            if ((effective_sample_size / n_particles) < 0.3).sum() > 0:
+                ancestors = torch.multinomial(probs.transpose(0, 1), n_particles, True)
+
+                # now, reindex, which is the most important thing
+                offsets = n_particles * torch.arange(batch_sz).unsqueeze(1).repeat(1, n_particles).long()
+                if ancestors.is_cuda:
+                    offsets = offsets.cuda()
+                unrolled_idx = Variable(ancestors + offsets).view(-1)
+
+                # shuffle!
+                z = torch.index_select(z, 0, unrolled_idx)
+                h = torch.index_select(h, 0, unrolled_idx)
+                prior_h = torch.index_select(prior_h, 0, unrolled_idx)
+
+                # reset accumulated_weights
+                accumulated_weights = -math.log(n_particles)  # will contain log w_{t - 1}
+
+            # set things up for next time
+            if i != seq_len - 1:
+                feed = torch.cat([emb[i].repeat(n_particles, 1), self.z_emb(z)], 1)
+                prior_h = self.z_decoder(feed, prior_h)
+                prior_logits = F.log_softmax(self.project_z(prior_h[0]), 1)
+                h = self.hidden_rnn(x_emb[i].repeat(n_particles, 1), h)  # feed the next word into the RNN
+
+        if n_particles != 1:
+            loss = -log_sum_exp(-loss.view(n_particles, batch_sz), 0) + math.log(n_particles)
+            NLL = -log_sum_exp(-nlls.view(seq_len, n_particles, batch_sz), 1) + math.log(n_particles)  # not quite accurate, but what can you do
+        else:
+            NLL = nlls
+
+        # now, we calculate the final log-marginal estimator
+        return loss.sum(), NLL.sum(), (seq_len * batch_sz), 0
+
+class HMM_LSTM_MFVI(HMM_VI_Layers):
+    """
+    This model also isn't a VRNN - it's just a regular LSTM language model with the additional information / inference from z
+    being concatenated into the process - i.e. Z is not autoregressive
+
+    TODO
+    """
+    def __init__(self, *args, **kwargs):
+        super(HMM_LSTM_MFVI, self).__init__(*args, **kwargs)
+        self.hidden_rnn = nn.LSTMCell(self.word_dim, self.hidden_size)
+        self.project = nn.Linear(self.hidden_size + self.z_dim, self.hidden_size)
+
+    def init_inference(self, hmm_params):
+        load_inference(self, hmm_params)
+
+    def forward(self, input, args, n_particles, test=False):
+        """
+        n_particles is interpreted as 1 for now to not screw anything up
+        """
+        if test:
+            n_particles = 10
+        else:
+            n_particles = 1
+        T = nn.Softmax(dim=0)(self.T)  # NOTE: not in log-space
+        pi = nn.Softmax(dim=0)(self.pi)
+
+        # run the input and teacher-forcing inputs through the embedding layers here
+        seq_len, batch_sz = input.size()
+        emb = self.inp_embedding(input)
+        hidden = self.init_hidden(batch_sz, self.nhid, 2)  # bidirectional
+        hidden_states, (_, _) = self.encoder(emb, hidden)
+        hidden_states = hidden_states.repeat(1, n_particles, 1)
+
+        # run the z-decoder at this point, evaluating the NLL at each step
+        h = Variable(hidden_states.data.new(batch_sz * n_particles, self.hidden_size).zero_())
+
+        nlls = hidden_states.data.new(seq_len, batch_sz * n_particles)
+        loss = 0
+
+        # now a log-prob
+        prior_probs = pi.unsqueeze(0).expand(batch_sz * n_particles, self.z_dim)
+
+        logits = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)
+        feed = None
+
+        for i in range(seq_len):
+            # build the next z sample - not differentiable! we don't train the inference network
+            logits = F.log_softmax(self.logits(hidden_states[i]), 1).detach()
+            z = OneHotCategorical(logits=logits).sample()
+
+            # this should be batch_sz x x_dim
+            feed = self.project(torch.cat([h, z], 1))  # batch_sz x hidden_dim
+            scores = torch.mm(feed, self.emit.t())  # batch_sz x x_dim
+
+            NLL = nn.CrossEntropyLoss(reduce=False)(scores, input[i].repeat(n_particles))
+            KL = (logits.exp() * (logits - (prior_probs + 1e-16).log())).sum(1)
+            loss += (NLL + KL)
+
+            nlls[i] = NLL.data
+
+            # set things up for next time
+            if i != seq_len - 1:
+                prior_probs = (T.unsqueeze(0) * z.unsqueeze(1)).sum(2)
+                h = self.hidden_rnn(emb[i].repeat(n_particles, 1), h)  # feed the next word into the RNN
+
+        if n_particles != 1:
+            loss = -log_sum_exp(-loss.view(n_particles, batch_sz), 0) + math.log(n_particles)
+            NLL = -log_sum_exp(-nlls.view(seq_len, n_particles, batch_sz), 1) + math.log(n_particles)  # not quite accurate, but what can you do
+        else:
+            NLL = nlls
+
+        # now, we calculate the final log-marginal estimator
+        return loss.sum(), NLL.sum(), (seq_len * batch_sz), 0
+
+#
+# Models below this point are implementations of Victoria's paper
+#
 
 
 class HMM_Joint_LSTM(HMM_EM_Layers):

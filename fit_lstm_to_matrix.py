@@ -38,7 +38,7 @@ def main():
         if i % 100 == 0:
             print("({:.3f}, {:.3f})".format(error.data[0], regularization.data[0]))
 
-    with open('lstm_final.pt', 'w') as f:
+    with open('lstm_final_150.pt', 'w') as f:
         torch.save((lstm, z_emb, project), f)
 
 
