@@ -377,7 +377,7 @@ class VRNN_LSTM_Auto_Concrete(VRNN_LSTM_Auto_Deep):
 
         for i in range(seq_len):
             # build the next z sample - not differentiable! we don't train the inference network
-            logits = F.log_softmax(self.logits(hidden_states[i]), 1).detach()
+            logits = F.log_softmax(self.logits(hidden_states[i]), 1)
 
             if test:
                 q = OneHotCategorical(logits=logits)
@@ -417,10 +417,120 @@ class VRNN_LSTM_Auto_Concrete(VRNN_LSTM_Auto_Deep):
         return loss.sum(), NLL.sum(), (seq_len * batch_sz), 0
 
 
+class VRNN_LSTM_Auto_PF(VRNN_LSTM_Auto_Concrete):
+    def forward(self, input, args, n_particles, test=False):
+        """
+        evaluation is the IWAE-10 bound
+        """
+        pi = F.log_softmax(self.pi, 0)
+
+        # run the input and teacher-forcing inputs through the embedding layers here
+        seq_len, batch_sz = input.size()
+        emb = self.inp_embedding(input)
+        hidden = self.init_hidden(batch_sz, self.nhid, 2)  # bidirectional
+        hidden_states, (_, _) = self.encoder(emb, hidden)
+        hidden_states = hidden_states.repeat(1, n_particles, 1)
+
+        # run the z-decoder at this point, evaluating the NLL at each step
+        h = (Variable(hidden_states.data.new(batch_sz * n_particles, self.hidden_size).zero_()),
+             Variable(hidden_states.data.new(batch_sz * n_particles, self.hidden_size).zero_()))
+
+        nlls = hidden_states.data.new(seq_len, batch_sz * n_particles)
+        loss = 0
+
+        # now a log-prob
+        prior_logits = pi.unsqueeze(0).expand(batch_sz * n_particles, self.z_dim)
+        prior_h = (Variable(torch.zeros(batch_sz * n_particles, 50).cuda()),
+                   Variable(torch.zeros(batch_sz * n_particles, 50).cuda()))
+
+        accumulated_weights = -math.log(n_particles)  # will contain log w_{t - 1}
+        logits = self.init_hidden(batch_sz * n_particles, self.z_dim, squeeze=True)
+        feed = None
+
+        x_emb = self.lockdrop(emb, self.dropout_x)
+
+        for i in range(seq_len):
+            # build the next z sample - not differentiable! we don't train the inference network
+            logits = F.log_softmax(self.logits(hidden_states[i]), 1).detach()
+
+            if test:
+                q = OneHotCategorical(logits=logits)
+                p = OneHotCategorical(logits=prior_logits)
+                z = q.sample()
+            else:
+                q = RelaxedOneHotCategorical(temperature=self.temp, logits=logits)
+                p = RelaxedOneHotCategorical(temperature=self.temp_prior, logits=prior_logits)
+                z = q.rsample()
+
+            # this should be batch_sz x x_dim
+            scores = torch.mm(self.project(torch.cat([h[0], z], 1)), self.emit.t())
+
+            NLL = nn.CrossEntropyLoss(reduce=False)(scores, input[i].repeat(n_particles))
+            nlls[i] = NLL.data
+
+            f_term = p.log_prob(z)  # prior
+            r_term = q.log_prob(z)  # proposal
+            alpha = -NLL + (f_term - r_term)
+
+            wa = accumulated_weights + alpha.view(n_particles, batch_sz)
+
+            Z = log_sum_exp(wa, dim=0)  # line 7
+
+            loss += Z  # line 8
+            accumulated_weights = wa - Z  # F.log_softmax(wa, dim=0)  # line 9
+
+            probs = accumulated_weights.data.exp()
+            probs += 0.01
+            probs = probs / probs.sum(0, keepdim=True)
+            effective_sample_size = 1./probs.pow(2).sum(0)
+
+            if any_nans(probs):
+                pdb.set_trace()
+
+            # probs is [n_particles, batch_sz]
+            # ancestors [2 x 15] = [[0, 0, 0, ..., 0], [0, 1, 2, 3, ...]]
+            # offsets   [2 x 15] = [[0, 0, 0, ..., 0], [1, 1, 1, 1, ...]]
+
+            # resample / RSAMP
+            if ((effective_sample_size / n_particles) < 0.3).sum() > 0:
+                ancestors = torch.multinomial(probs.transpose(0, 1), n_particles, True)
+
+                # now, reindex, which is the most important thing
+                offsets = n_particles * torch.arange(batch_sz).unsqueeze(1).repeat(1, n_particles).long()
+                if ancestors.is_cuda:
+                    offsets = offsets.cuda()
+                unrolled_idx = Variable(ancestors + offsets).view(-1)
+
+                # shuffle!
+                z = torch.index_select(z, 0, unrolled_idx)
+                h = torch.index_select(h, 0, unrolled_idx)
+                prior_h = torch.index_select(prior_h, 0, unrolled_idx)
+
+                # reset accumulated_weights
+                accumulated_weights = -math.log(n_particles)  # will contain log w_{t - 1}
+
+            # set things up for next time
+            if i != seq_len - 1:
+                feed = torch.cat([emb[i].repeat(n_particles, 1), self.z_emb(z)], 1)
+                prior_h = self.z_decoder(feed, prior_h)
+                prior_logits = F.log_softmax(self.project_z(prior_h[0]), 1)
+                h = self.hidden_rnn(x_emb[i].repeat(n_particles, 1), h)  # feed the next word into the RNN
+
+        if n_particles != 1:
+            loss = -log_sum_exp(-loss.view(n_particles, batch_sz), 0) + math.log(n_particles)
+            NLL = -log_sum_exp(-nlls.view(seq_len, n_particles, batch_sz), 1) + math.log(n_particles)  # not quite accurate, but what can you do
+        else:
+            NLL = nlls
+
+        # now, we calculate the final log-marginal estimator
+        return loss.sum(), NLL.sum(), (seq_len * batch_sz), 0
+
 class HMM_LSTM_MFVI(HMM_VI_Layers):
     """
     This model also isn't a VRNN - it's just a regular LSTM language model with the additional information / inference from z
-    being concatenated into the process
+    being concatenated into the process - i.e. Z is not autoregressive
+
+    TODO
     """
     def __init__(self, *args, **kwargs):
         super(HMM_LSTM_MFVI, self).__init__(*args, **kwargs)
