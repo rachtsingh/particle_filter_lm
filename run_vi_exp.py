@@ -61,9 +61,9 @@ parser.add_argument('--epochs', type=int, default=1000,
                     help='upper epoch limit')
 parser.add_argument('--batch_size', type=int, default=80, metavar='N',
                     help='batch size')
-parser.add_argument('--temp', type=float, default=0.3,
+parser.add_argument('--temp', type=float, default=0.35,
                     help='temperature of the posterior to use for relaxed discrete latents')
-parser.add_argument('--temp_prior', type=float, default=0.35,
+parser.add_argument('--temp_prior', type=float, default=0.3,
                     help='temperature of the prior to use for relaxed discrete latents')
 parser.add_argument('--slurm-id', type=int, help='for use in SLURM scripts')
 parser.add_argument('--num-importance-samples', type=int, default=5,
@@ -177,6 +177,9 @@ elif args.model == 'vrnn_lstm_auto_deep':
 elif args.model == 'vrnn_lstm_concrete':
     model = vi_filter.VRNN_LSTM_Auto_Concrete(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
                                               word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
+elif args.model == 'vrnn_lstm_pf':
+    model = vi_filter.VRNN_LSTM_Auto_PF(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
+                                        word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
 elif args.model == 'hmm_lstm_sep':
     model = vi_filter.HMM_Joint_LSTM(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, lstm_hidden_size=args.lstm_sz,
                                      word_dim=args.word_dim, separate_opt=True)
@@ -194,6 +197,8 @@ if args.embedding is not None and model.load_embedding:
     model.load_embedding(data)
 
 if args.load_model:
+    if not hasattr(model, 'dec') and hasattr(model, 'organize'):
+        model.organize()
     model.load_state_dict(torch.load(args.load_model))
 
 # load parameters if we want that comparison:
@@ -256,7 +261,8 @@ def flush():
 try:
     if args.finetune_inference:
         # we have to be a lot more careful - this only works with the vrnn_lstm_concrete
-        model.organize()
+        if not hasattr(model, 'dec'):
+            model.organize()
         optimizer = torch.optim.Adam([{'params': model.enc.parameters(), 'lr': args.lr / 5.},
                                       {'params': model.dec.parameters()}], lr=args.lr)
     else:
@@ -268,11 +274,11 @@ try:
     else:
         print("ignoring scheduler, lr is fixed")
 
-    val_loss, val_nll, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
-    print(val_loss, val_nll, true_marginal)
-    print("-" * 89)
-    print("ELBO: {:5.2f}, val_nll: {:5.2f}, ELBO ppl: {:5.2f}, true ppl: {:5.2f}".format(val_loss, val_nll, np.exp(val_loss), np.exp(-true_marginal)))
-    print("-" * 89)
+    # val_loss, val_nll, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
+    # print(val_loss, val_nll, true_marginal)
+    # print("-" * 89)
+    # print("ELBO: {:5.2f}, val_nll: {:5.2f}, ELBO ppl: {:5.2f}, true ppl: {:5.2f}".format(val_loss, val_nll, np.exp(val_loss), np.exp(-true_marginal)))
+    # print("-" * 89)
 
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()

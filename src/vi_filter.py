@@ -449,18 +449,25 @@ class VRNN_LSTM_Auto_PF(VRNN_LSTM_Auto_Concrete):
 
         x_emb = self.lockdrop(emb, self.dropout_x)
 
+        if test:
+            pdb.set_trace()
+
         for i in range(seq_len):
             # build the next z sample - not differentiable! we don't train the inference network
             logits = F.log_softmax(self.logits(hidden_states[i]), 1).detach()
 
-            if test:
-                q = OneHotCategorical(logits=logits)
-                p = OneHotCategorical(logits=prior_logits)
-                z = q.sample()
-            else:
-                q = RelaxedOneHotCategorical(temperature=self.temp, logits=logits)
-                p = RelaxedOneHotCategorical(temperature=self.temp_prior, logits=prior_logits)
-                z = q.rsample()
+            # if test:
+            q = OneHotCategorical(logits=logits)
+            p = OneHotCategorical(logits=prior_logits)
+            a = q.sample()
+            # else:
+            #     q = RelaxedOneHotCategorical(temperature=self.temp, logits=logits)
+            #     p = RelaxedOneHotCategorical(temperature=self.temp_prior, logits=prior_logits)
+            #     a = q.rsample()
+
+            # to guard against being too crazy
+            b = a + 1e-16
+            z = b / b.sum(1, keepdim=True)
 
             # this should be batch_sz x x_dim
             scores = torch.mm(self.project(torch.cat([h[0], z], 1)), self.emit.t())
@@ -503,8 +510,10 @@ class VRNN_LSTM_Auto_PF(VRNN_LSTM_Auto_Concrete):
 
                 # shuffle!
                 z = torch.index_select(z, 0, unrolled_idx)
-                h = torch.index_select(h, 0, unrolled_idx)
-                prior_h = torch.index_select(prior_h, 0, unrolled_idx)
+                a, b = h
+                h = torch.index_select(a, 0, unrolled_idx), torch.index_select(b, 0, unrolled_idx)
+                a, b = prior_h
+                prior_h = torch.index_select(a, 0, unrolled_idx), torch.index_select(b, 0, unrolled_idx)
 
                 # reset accumulated_weights
                 accumulated_weights = -math.log(n_particles)  # will contain log w_{t - 1}
@@ -516,14 +525,11 @@ class VRNN_LSTM_Auto_PF(VRNN_LSTM_Auto_Concrete):
                 prior_logits = F.log_softmax(self.project_z(prior_h[0]), 1)
                 h = self.hidden_rnn(x_emb[i].repeat(n_particles, 1), h)  # feed the next word into the RNN
 
-        if n_particles != 1:
-            loss = -log_sum_exp(-loss.view(n_particles, batch_sz), 0) + math.log(n_particles)
-            NLL = -log_sum_exp(-nlls.view(seq_len, n_particles, batch_sz), 1) + math.log(n_particles)  # not quite accurate, but what can you do
-        else:
-            NLL = nlls
+        NLL = nlls
 
         # now, we calculate the final log-marginal estimator
-        return loss.sum(), NLL.sum(), (seq_len * batch_sz), 0
+        return loss.sum(), NLL.sum(), (seq_len * batch_sz * n_particles), 0
+
 
 class HMM_LSTM_MFVI(HMM_VI_Layers):
     """
