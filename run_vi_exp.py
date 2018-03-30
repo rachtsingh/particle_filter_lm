@@ -43,6 +43,7 @@ parser.add_argument('--hidden', type=int, default=10,
                     help='dimensionality of hidden size in generative model, if any')
 parser.add_argument('--lstm-sz', type=int, default=200,
                     help='dimensionality of the LSTM in the LSTM + HMM models')
+parser.add_argument('--deep-mix', action='store_true')
 parser.add_argument('--lr', type=float, default=0.01,
                     help='initial learning rate')
 parser.add_argument('--clip', type=float, default=3.0,
@@ -178,13 +179,15 @@ elif args.model == 'vrnn_lstm_concrete':
                                               word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
 elif args.model == 'hmm_lstm_sep':
     model = vi_filter.HMM_Joint_LSTM(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, lstm_hidden_size=args.lstm_sz,
-                                     word_dim=args.word_dim, separate_opt=True)
+                                     word_dim=args.word_dim, separate_opt=True, deep=args.deep_mix)
 elif args.model == 'hmm_lstm_joint':
     model = vi_filter.HMM_Joint_LSTM(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, lstm_hidden_size=args.lstm_sz,
-                                     word_dim=args.word_dim, separate_opt=False)
+                                     word_dim=args.word_dim, separate_opt=False, deep=args.deep_mix)
 elif args.model == 'ablation':
     model = ablation.HMM_Gradients(z_dim=args.z_dim, x_dim=args.x_dim, hidden_size=args.hidden, nhid=args.nhid,
                                    word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
+elif args.model == 'lstm':
+    model = vi_filter.LSTMLM(x_dim=args.x_dim, lstm_hidden_size=args.lstm_sz, word_dim=args.word_dim)
 else:
     raise NotImplementedError("TODO")
 
@@ -256,7 +259,11 @@ try:
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
 
     if not args.no_scheduler:
-        scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=1, verbose=True, threshold=0.01, min_lr=1e-5)
+        if args.model == 'hmm_lstm_sep' or args.model == 'hmm_lstm_joint':
+            scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
+        else:
+            scheduler = StepLR(optimizer, step_size=10, gamma=0.7)
+            # scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=1, verbose=True, threshold=0.5, min_lr=1e-5)
     else:
         print("ignoring scheduler, lr is fixed")
 
@@ -276,8 +283,6 @@ try:
         # let's ignore ASGD for now
         val_loss, val_nll, true_marginal = model.evaluate(val_loader, args, args.num_importance_samples)
 
-        if not args.no_scheduler:
-            scheduler.step(val_loss)
 
         print("anneal: {:.3f}".format(args.anneal))
         if val_loss < best_val_loss:
@@ -294,10 +299,18 @@ try:
                 ppl = np.inf
                 true_marginal_ppl = np.inf
 
+            if not args.no_scheduler:
+                scheduler.step()
+                # if args.model == 'hmm_lstm_sep' or args.model == 'hmm_lstm_joint':
+                #     scheduler.step()
+                # else:
+                #     scheduler.step(ppl)
+
             print('-' * 80)
             print('| end of epoch {:3d} | time: {:5.2f}s | valid ELBO {:5.2f} | valid NLL {:5.2f} | PPL: {:5.2f} | true PPL: {:5.2f}'
                   ''.format(epoch, (time.time() - epoch_start_time), val_loss, val_nll, ppl, true_marginal_ppl))
             print('-' * 80)
+            sys.stdout.flush()
 
         if epoch % 10 == 0:
             args.lr = args.lr * 0.8

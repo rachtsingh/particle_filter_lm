@@ -40,14 +40,13 @@ class HMM_Gradients(HMM_MFVI_Yoon_Deep):
     """
     def __init__(self, *args, **kwargs):
         super(HMM_Gradients, self).__init__(*args, **kwargs)
-        print(self.temp, self.temp_prior)
         self.gradients = {}
         self.storage = {}
 
     def train_epoch(self, train_data, optimizer, epoch, args, num_importance_samples):
         self.train()
         for i, batch in enumerate(train_data):
-            if (i + 1) % 100 == 0:
+            if (i + 1) % 250 == 0:
                 print(i + 1)
             if args.cuda:
                 batch = batch.cuda()
