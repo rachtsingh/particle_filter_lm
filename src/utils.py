@@ -54,4 +54,5 @@ def any_nans(a):
         a = a.data
     return np.isnan(a.cpu().numpy()).any()
 
+
 VERSION = (sys.version_info[0], torch.__version__.split('+')[1] == 'c474136')

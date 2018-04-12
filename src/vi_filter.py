@@ -15,7 +15,7 @@ import pdb  # noqa: F401
 import gc
 
 from src.hmm import HMM_EM_Layers
-from src.utils import print_in_epoch_summary, log_sum_exp, any_nans  # noqa: F401
+from src.utils import print_in_epoch_summary, log_sum_exp, any_nans, VERSION  # noqa: F401
 from src.locked_dropout import LockedDropout  # noqa: F401
 from src.embed_regularize import embedded_dropout  # noqa: F401
 from src.hmm_filter import HMM_VI_Layers
@@ -694,10 +694,15 @@ class HMM_Joint_LSTM(HMM_EM_Layers):
             total_loss += loss.detach().data
             total_nll += nll
 
-        if args.dataset != '1billion':
+        if args.dataset not in ('1billion', 'ptb'):
             total_tokens = 1
 
-        return total_nll / float(total_tokens), total_loss[0] / float(total_tokens), (total_loss[0] - total_nll)/float(total_tokens)
+        if VERSION[1]:
+            total_loss = total_loss.item()
+        else:
+            total_loss = total_loss[0]
+
+        return total_nll / float(total_tokens), total_loss / float(total_tokens), (total_loss - total_nll)/float(total_tokens)
 
     def train_epoch(self, train_data, optimizer, epoch, args, num_samples=None):
         self.train()
@@ -720,6 +725,7 @@ class HMM_Joint_LSTM(HMM_EM_Layers):
         # actually ignored
         return total_loss.data[0]
 
+
 class LSTMLM(nn.Module):
     def __init__(self, x_dim, lstm_hidden_size, word_dim):
         super(LSTMLM, self).__init__()
@@ -728,7 +734,7 @@ class LSTMLM(nn.Module):
         self.score = nn.Linear(lstm_hidden_size, x_dim)
         self.lstm_hidden_size = lstm_hidden_size
         self.lockdrop = LockedDropout()
-        self.dropout_x = 0.3
+        self.dropout_x = 0.4
 
     def forward(self, input, args, test=False):
         seq_len, batch_sz = input.size()
@@ -737,13 +743,13 @@ class LSTMLM(nn.Module):
 
         h = (Variable(emb.data.new(1, batch_sz, self.lstm_hidden_size).zero_()),
              Variable(emb.data.new(1, batch_sz, self.lstm_hidden_size).zero_()))
-        
+
         # run the LSTM
         out, _ = self.model(x_emb[:-1], h)
-    
+
         NLL = 0
 
-        # make predictions 
+        # make predictions
         for i in range(seq_len - 1):
             scores = self.score(out[i])
             NLL += nn.CrossEntropyLoss(size_average=False)(scores, input[i + 1])
@@ -766,7 +772,7 @@ class LSTMLM(nn.Module):
             total_loss += loss.detach().data
             total_nll += nll
 
-        if args.dataset != '1billion':
+        if args.dataset not in ('1billion', 'ptb'):
             total_tokens = 1
 
         return total_nll / float(total_tokens), total_loss[0] / float(total_tokens), (total_loss[0] - total_nll)/float(total_tokens)
@@ -774,20 +780,64 @@ class LSTMLM(nn.Module):
     def train_epoch(self, train_data, optimizer, epoch, args, num_samples=None):
         self.train()
         total_loss = 0
+        total_tokens = 0
+        last_chunk_loss = 0
+        last_chunk_tokens = 0
+        dataset_size = len(train_data)
 
         for i, batch in enumerate(train_data):
             if args.cuda:
                 batch = batch.cuda()
             data = Variable(batch.squeeze(0).t().contiguous())  # squeeze for 1 billion
             optimizer.zero_grad()
-            loss, nll = self.forward(data, args, test=False)
+            nll, _ = self.forward(data, args, test=False)
             tokens = (data.size()[0] * data.size()[1])
-            loss = loss.sum() / tokens
+            loss = nll.sum() / tokens
             loss.backward()
+            torch.nn.utils.clip_grad_norm(self.parameters(), 5)
             optimizer.step()
-            total_loss += loss.detach()
-            if (i + 1) % args.log_interval == 0:
-                print("total loss: {:.3f}, nll: {:.3f}".format(loss.data[0], nll / tokens))
+            total_loss += nll.data.sum()
+            total_tokens += tokens
+
+            if i % args.log_interval == 0 and i > 0 and not args.quiet:
+                l = loss.data.item() if VERSION[1] else loss.data[0]
+                chunk_loss = total_loss - last_chunk_loss
+                chunk_tokens = total_tokens - last_chunk_tokens
+                print_in_epoch_summary(epoch, i, args.batch_size, dataset_size,
+                                       l, 0,
+                                       {'Chunk Loss': chunk_loss / chunk_tokens},
+                                       tokens, "")
+                last_chunk_loss = total_loss
+                last_chunk_tokens = total_tokens
 
         # actually ignored
-        return total_loss.data[0]
+        return total_loss / total_tokens
+
+
+class LSTM_Multi(LSTMLM):
+    def __init__(self, x_dim, lstm_hidden_size, word_dim):
+        super(LSTM_Multi, self).__init__(x_dim, lstm_hidden_size, word_dim)
+        self.model_2 = nn.LSTM(lstm_hidden_size, lstm_hidden_size)
+        self.inp_embedding.weight.data.uniform_(-0.1, 0.1)
+        self.score.weight.data.uniform_(-0.1, 0.1)
+        self.score.bias.data.zero_()
+        self.dropout_h = 0.25
+
+    def forward(self, input, args, test=False):
+        seq_len, batch_sz = input.size()
+        emb = self.inp_embedding(input)
+        x_emb = self.lockdrop(emb, self.dropout_x)
+
+        h = (Variable(emb.data.new(1, batch_sz, self.lstm_hidden_size).zero_()),
+             Variable(emb.data.new(1, batch_sz, self.lstm_hidden_size).zero_()))
+        h_2 = (Variable(emb.data.new(1, batch_sz, self.lstm_hidden_size).zero_()),
+               Variable(emb.data.new(1, batch_sz, self.lstm_hidden_size).zero_()))
+
+        # run the LSTM
+        raw_out, _ = self.model(x_emb[:-1], h)
+        out, _ = self.model_2(self.lockdrop(raw_out, self.dropout_h), h_2)
+
+        scores = self.score(out.view((seq_len - 1) * batch_sz, -1))
+        loss = nn.CrossEntropyLoss(size_average=False)(scores, input[1:].view(-1))
+
+        return loss, loss.data.sum()

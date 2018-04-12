@@ -15,6 +15,7 @@ import pdb  # noqa: F401
 from src.utils import get_sha, VERSION
 from src.hmm_dataset import create_hmm_data, HMMData
 from src.real_hmm_dataset import OneBillionWord
+from src.seq2seq_data import PTBSeq2Seq, create_clean_gen
 from src import vi_filter
 from src import ablation
 
@@ -146,6 +147,11 @@ elif args.dataset == '1billion':
     args.batch_size = 1
     train_data = OneBillionWord('data/1_billion_word/1b-100k-train.hdf5')
     val_data = OneBillionWord('data/1_billion_word/1b-100k-val.hdf5')
+elif args.dataset == 'ptb':
+    params = None
+    args.batch_size = 1
+    train_data = OneBillionWord('data/ptb/ptb-train.hdf5')
+    val_data = OneBillionWord('data/ptb/ptb-val.hdf5')
 else:
     # we'll load the dataset from the specified file
     params = None
@@ -153,7 +159,6 @@ else:
     train_data = HMMData(train)
     val_data = HMMData(val)
 
-# TODO: just changed shuffle value for testing!
 train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size,
                                            shuffle=True, **data_kwargs)
 val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size,
@@ -192,6 +197,8 @@ elif args.model == 'ablation':
                                    word_dim=args.word_dim, temp=args.temp, temp_prior=args.temp_prior, params=None)
 elif args.model == 'lstm':
     model = vi_filter.LSTMLM(x_dim=args.x_dim, lstm_hidden_size=args.lstm_sz, word_dim=args.word_dim)
+elif args.model == 'lstm_multi':
+    model = vi_filter.LSTM_Multi(x_dim=args.x_dim, lstm_hidden_size=args.lstm_sz, word_dim=args.word_dim)
 else:
     raise NotImplementedError("TODO")
 
@@ -275,7 +282,7 @@ try:
         if args.model == 'hmm_lstm_sep' or args.model == 'hmm_lstm_joint':
             scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
         else:
-            scheduler = StepLR(optimizer, step_size=10, gamma=0.7)
+            scheduler = StepLR(optimizer, step_size=6, gamma=0.83)
             # scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=1, verbose=True, threshold=0.5, min_lr=1e-5)
     else:
         print("ignoring scheduler, lr is fixed")
@@ -305,7 +312,7 @@ try:
             best_val_loss = val_loss
             flush()
         if not args.quiet:
-            if args.dataset != '1billion':
+            if args.dataset not in ('1billion', 'ptb'):
                 ppl = val_loss
                 true_marginal_ppl = -true_marginal
             elif val_loss < 10:
@@ -317,10 +324,6 @@ try:
 
             if not args.no_scheduler:
                 scheduler.step()
-                # if args.model == 'hmm_lstm_sep' or args.model == 'hmm_lstm_joint':
-                #     scheduler.step()
-                # else:
-                #     scheduler.step(ppl)
 
             print('-' * 80)
             print('| end of epoch {:3d} | time: {:5.2f}s | valid ELBO {:5.2f} | valid NLL {:5.2f} | PPL: {:5.2f} | true PPL: {:5.2f}'

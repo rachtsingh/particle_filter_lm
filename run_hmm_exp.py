@@ -14,6 +14,7 @@ import pdb  # noqa: F401
 from src.utils import get_sha, VERSION
 from src.hmm_dataset import create_hmm_data, HMMData
 from src.real_hmm_dataset import OneBillionWord
+from src.seq2seq_data import PTBSeq2Seq, create_clean_gen
 from src import hmm_filter
 from src import hmm
 
@@ -136,6 +137,9 @@ elif args.dataset == '1billion':
     args.batch_size = 1
     train_data = OneBillionWord('data/1_billion_word/1b-100k-train.hdf5')
     val_data = OneBillionWord('data/1_billion_word/1b-100k-val.hdf5')
+elif args.dataset == 'ptb':
+    params = None
+    train_data, val_data, _ = PTBSeq2Seq.iters(batch_size=args.batch_size)
 else:
     # we'll load the dataset from the specified file
     params = None
@@ -143,10 +147,14 @@ else:
     train_data = HMMData(train)
     val_data = HMMData(val)
 
-train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size,
-                                           shuffle=True, **data_kwargs)
-val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size,
-                                         shuffle=True, **data_kwargs)
+if args.dataset != 'ptb':
+    train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size,
+                                               shuffle=True, **data_kwargs)
+    val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size,
+                                             shuffle=True, **data_kwargs)
+else:
+    train_loader = create_clean_gen(train_data)
+    val_loader = create_clean_gen(val_data)
 
 
 params = None
