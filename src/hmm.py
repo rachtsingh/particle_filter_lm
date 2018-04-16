@@ -206,7 +206,7 @@ class HMM_EM(nn.Module):
             loss = loss.sum()
             total_loss += loss.detach().data
 
-        if args.dataset != '1billion':
+        if args.dataset not in ('1billion', 'ptb'):
             total_tokens = 1
 
         return total_loss[0] / float(total_tokens), -total_loss[0] / float(total_tokens)

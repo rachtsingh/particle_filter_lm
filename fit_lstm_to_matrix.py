@@ -4,14 +4,17 @@ from torch import nn
 from torch.autograd import Variable
 from torch.nn import functional as F
 
-WORD_DIM = 300
+WORD_DIM = 500
+
+# options for the resulting network
 Z_HID = 50
-Z_EMB = 50
+Z_EMB = 100
 REPEAT = 20
 
 
 def main():
     params = torch.load(sys.argv[1])
+    output = sys.argv[2]
     T = F.log_softmax(Variable(params['T']), 0)
     z_dim = T.size(0)
     lstm = nn.LSTMCell(WORD_DIM + Z_EMB, Z_HID).cuda()
@@ -38,7 +41,7 @@ def main():
         if i % 100 == 0:
             print("({:.3f}, {:.3f})".format(error.data[0], regularization.data[0]))
 
-    with open('lstm_final_150.pt', 'w') as f:
+    with open(output, 'w') as f:
         torch.save((lstm, z_emb, project), f)
 
 

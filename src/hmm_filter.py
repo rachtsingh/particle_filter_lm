@@ -255,7 +255,7 @@ class HMMInference(HMM_EM):
             total_resamples += resamples
             batch_idx += 1
 
-        if args.dataset != '1billion':
+        if args.dataset not in ('1billion', 'ptb'):
             total_tokens = 1
         args.anneal = old_anneal
 
@@ -462,7 +462,7 @@ class HMM_VI_Marginalized(HMM_VI_Layers):
             total_resamples += resamples
             batch_idx += 1
 
-        if args.dataset != '1billion':
+        if args.dataset not in ('1billion', 'ptb'):
             total_tokens = 1
         args.anneal = old_anneal
 

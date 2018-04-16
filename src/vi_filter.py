@@ -248,7 +248,7 @@ class VRNN_LSTM_Auto_Deep(HMM_GRU_MFVI_Deep):
     """
     def __init__(self, *args, **kwargs):
         super(VRNN_LSTM_Auto_Deep, self).__init__(*args, **kwargs)
-        Z_EMB = 50
+        Z_EMB = 100
         Z_HID = 50
         self.hidden_rnn = nn.LSTMCell(self.word_dim, self.hidden_size)
         self.z_decoder = nn.LSTMCell(self.word_dim + Z_EMB, Z_HID)
@@ -336,6 +336,10 @@ class VRNN_LSTM_Auto_Concrete(VRNN_LSTM_Auto_Deep):
     The big difference with the parent is that this model attempts to learn
     the inference network directly via the Concrete distribution.
     """
+    def __init__(self, *args, **kwargs):
+        super(VRNN_LSTM_Auto_Concrete, self).__init__(*args, **kwargs)
+        self.organize()
+
     def organize(self):
         self.enc.append(self.logits)
         self.dec = nn.ModuleList([self.z_decoder, self.hidden_rnn, self.project,

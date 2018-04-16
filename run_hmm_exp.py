@@ -84,6 +84,9 @@ parser.add_argument('--embedding', type=str, default=None,
 parser.add_argument('--load-model', type=str, default=None,
                     help='Which model file to load if any')
 parser.add_argument('--no-scheduler', action='store_true')
+parser.add_argument('--scheduler-step', type=int, default=10,
+                    help='number of epochs before the scheduler reduces the learning rate')
+parser.add_argument('--optimizer', type=str, default='Adam')
 args = parser.parse_args()
 
 # Set the random seed manually for reproducibility.
@@ -139,7 +142,9 @@ elif args.dataset == '1billion':
     val_data = OneBillionWord('data/1_billion_word/1b-100k-val.hdf5')
 elif args.dataset == 'ptb':
     params = None
-    train_data, val_data, _ = PTBSeq2Seq.iters(batch_size=args.batch_size)
+    args.batch_size = 1
+    train_data = OneBillionWord('data/ptb/ptb-train.hdf5')
+    val_data = OneBillionWord('data/ptb/ptb-val.hdf5')
 else:
     # we'll load the dataset from the specified file
     params = None
@@ -147,15 +152,10 @@ else:
     train_data = HMMData(train)
     val_data = HMMData(val)
 
-if args.dataset != 'ptb':
-    train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size,
-                                               shuffle=True, **data_kwargs)
-    val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size,
-                                             shuffle=True, **data_kwargs)
-else:
-    train_loader = create_clean_gen(train_data)
-    val_loader = create_clean_gen(val_data)
-
+train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size,
+                                           shuffle=True, **data_kwargs)
+val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size,
+                                         shuffle=True, **data_kwargs)
 
 params = None
 
@@ -263,10 +263,13 @@ if args.load_model:
 
 # At any point you can hit Ctrl + C to break out of training early.
 try:
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
+    if args.optimizer == 'Adam':
+        optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
+    else:
+        optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
     if not args.no_scheduler:
         # scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=1, verbose=True, threshold=0.01, min_lr=1e-5)
-        scheduler = StepLR(optimizer, gamma=0.7, step_size=10)
+        scheduler = StepLR(optimizer, gamma=0.7, step_size=args.scheduler_step)
     else:
         print("ignoring scheduler, lr is fixed")
 

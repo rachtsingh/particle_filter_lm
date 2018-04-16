@@ -15,7 +15,7 @@ import pdb  # noqa: F401
 from src.utils import get_sha, VERSION
 from src.hmm_dataset import create_hmm_data, HMMData
 from src.real_hmm_dataset import OneBillionWord
-from src.seq2seq_data import PTBSeq2Seq, create_clean_gen
+from src.optim_alt import MixedOpt
 from src import vi_filter
 from src import ablation
 
@@ -74,7 +74,7 @@ parser.add_argument('--seed', type=int, default=1111,
                     help='random seed')
 parser.add_argument('--no-cuda', action='store_true',
                     help='use CUDA')
-parser.add_argument('--log-interval', type=int, default=500, metavar='N',
+parser.add_argument('--log-interval', type=int, default=100, metavar='N',
                     help='report interval')
 parser.add_argument('--save', type=str,  default=None,
                     help='path to save the final model')
@@ -96,6 +96,7 @@ parser.add_argument('--base-filename', type=str, default=None)
 parser.add_argument('--no-scheduler', action='store_true')
 parser.add_argument('--train-method', type=str, default=None)
 parser.add_argument('--finetune-inference', action='store_true')
+parser.add_argument('--optimizer', type=str, default='Adam')
 args = parser.parse_args()
 
 # Set the random seed manually for reproducibility.
@@ -269,21 +270,23 @@ def flush():
 
 # At any point you can hit Ctrl + C to break out of training early.
 try:
-    if args.finetune_inference:
-        # we have to be a lot more careful - this only works with the vrnn_lstm_concrete
-        if not hasattr(model, 'dec'):
-            model.organize()
-        optimizer = torch.optim.Adam([{'params': model.enc.parameters(), 'lr': args.lr / 5.},
-                                      {'params': model.dec.parameters()}], lr=args.lr)
-    else:
-        optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
+    print('organized: ' + str(hasattr(model, 'dec')))
+    if args.optimizer == 'Adam':
+        if args.finetune_inference:
+            optimizer = torch.optim.Adam([{'params': model.enc.parameters(), 'lr': args.lr / 5.},
+                                          {'params': model.dec.parameters()}], lr=args.lr)
+        else:
+            optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
+    elif args.optimizer == 'SGD':
+        optimizer = torch.optim.SGD(model.parameters(), lr=args.lr)
+    elif args.optimizer == 'MixedOpt':
+        optimizer = MixedOpt(model.enc.parameters(), model.dec.parameters(), args.lr, 0.25)
 
     if not args.no_scheduler:
         if args.model == 'hmm_lstm_sep' or args.model == 'hmm_lstm_joint':
             scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
         else:
-            scheduler = StepLR(optimizer, step_size=6, gamma=0.83)
-            # scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=1, verbose=True, threshold=0.5, min_lr=1e-5)
+            scheduler = StepLR(optimizer, step_size=8, gamma=0.83)
     else:
         print("ignoring scheduler, lr is fixed")
 
