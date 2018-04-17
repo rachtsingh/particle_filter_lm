@@ -287,8 +287,6 @@ class HMMInference(HMM_EM):
                 if args.cuda:
                     batch = batch.cuda()
                 data = Variable(batch.squeeze(0).t().contiguous())  # squeeze for 1 billion
-                if i > 500:
-                    break
                 if profile and batch_idx > 10:
                     print("breaking because profiling finished;")
                     break

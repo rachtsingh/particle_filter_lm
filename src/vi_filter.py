@@ -255,7 +255,7 @@ class VRNN_LSTM_Auto_Deep(HMM_GRU_MFVI_Deep):
         self.z_emb = nn.Linear(self.z_dim, Z_EMB)
         self.project_z = nn.Linear(Z_HID, self.z_dim)
         self.lockdrop = LockedDropout()
-        self.dropout_x = 0.3
+        self.dropout_x = 0.4
 
     def init_inference(self, hmm_params):
         load_inference(self, hmm_params, deep=True)
